@@ -94,7 +94,7 @@ void RadioPlayer::WorkerLoop() {
 
     while (redirect_count < 5 && !cancelled_) {
         http->SetTimeout(kHttpTimeoutMs);
-        http->SetHeader("Accept", "audio/mpeg, audio/mp3");
+        http->SetHeader("Accept", "audio/aac, audio/aacp, audio/mpeg, audio/mp3");
         http->SetHeader("Accept-Encoding", "identity");
 
         ESP_LOGI(TAG, "Opening radio stream: %s", target_url.c_str());
@@ -125,6 +125,18 @@ void RadioPlayer::WorkerLoop() {
     }
 
     if (opened && !cancelled_) {
+        // Detect audio format from Content-Type header
+        // format 2 = AAC, format 1 = MP3
+        uint8_t audio_format = 2; // Default to AAC (most Zeno streams are AAC)
+        std::string content_type = http->GetResponseHeader("content-type");
+        if (content_type.empty()) content_type = http->GetResponseHeader("Content-Type");
+        if (content_type.find("mpeg") != std::string::npos || content_type.find("mp3") != std::string::npos) {
+            audio_format = 1; // MP3
+            ESP_LOGI(TAG, "Stream format: MP3 (%s)", content_type.c_str());
+        } else {
+            ESP_LOGI(TAG, "Stream format: AAC (%s)", content_type.c_str());
+        }
+
         std::array<char, kHttpReadBufferSize> buffer;
         while (!cancelled_) {
             int size = http->Read(buffer.data(), buffer.size());
@@ -143,7 +155,7 @@ void RadioPlayer::WorkerLoop() {
 
         // Push directly to AudioService
         auto packet = std::make_unique<AudioStreamPacket>();
-        packet->format = 1; // MP3
+        packet->format = audio_format;
         packet->playback_id = current_playback_id;
         packet->payload.assign(buffer.data(), buffer.data() + size);
         

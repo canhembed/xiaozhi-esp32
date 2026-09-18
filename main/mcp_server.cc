@@ -271,7 +271,7 @@ void McpServer::AddUserOnlyTools() {
 
             std::string url =
                 "https://de1.api.radio-browser.info/json/stations/search?name=" + encoded +
-                "&limit=3&codec=MP3";
+                "&limit=3&order=votes&reverse=true";
             auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
             if (http) {
                 http->SetHeader("User-Agent", "XiaoZhi/1.0");
@@ -289,6 +289,11 @@ void McpServer::AddUserOnlyTools() {
                         // Limit response size to prevent OOM
                         if (response.length() > 4096)
                             break;
+                    // Replace https with http to save device memory (avoid SSL handshake)
+                    size_t pos = 0;
+                    while ((pos = response.find("https://", pos)) != std::string::npos) {
+                        response.replace(pos, 8, "http://");
+                        pos += 7;
                     }
                     return response.empty() ? "No results found" : response;
                 }
