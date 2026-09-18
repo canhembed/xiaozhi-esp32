@@ -98,6 +98,7 @@ void RadioPlayer::WorkerLoop() {
         http->SetHeader("Accept-Encoding", "identity");
 
         ESP_LOGI(TAG, "Opening radio stream: %s", target_url.c_str());
+        http->SetHeader("User-Agent", "VLC/3.0.16 LibVLC/3.0.16"); // Zeno.fm requires a User-Agent
         if (http->Open("GET", target_url)) {
             int status = http->GetStatusCode();
             if (status >= 200 && status < 300) {
