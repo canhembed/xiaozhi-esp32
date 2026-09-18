@@ -485,7 +485,7 @@ void AudioService::OpusCodecTask() {
                         } else {
                             break; // Avoid infinite loop if consumed is 0
                         }
-                    } else if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                    } else if (ret == ESP_AUDIO_ERR_DATA_LACK) {
                         // Needs more data to decode a frame. Buffer the remaining data.
                         mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
                         break; 
