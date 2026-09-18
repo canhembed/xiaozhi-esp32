@@ -29,7 +29,7 @@ private:
         bool packet_continued{false};   // Whether the current packet spans segments
         uint8_t header[27];             // Ogg page header
         uint8_t seg_table[255];         // Current segment table
-        uint8_t packet_buf[2048];       // 2 KB packet buffer
+        uint8_t packet_buf[8192];       // 8 KB packet buffer
         size_t packet_len = 0;          // Bytes accumulated in the packet buffer
         size_t seg_count = 0;           // Segment count in the current page
         size_t seg_index = 0;           // Current segment index

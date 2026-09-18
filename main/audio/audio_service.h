@@ -16,6 +16,7 @@
 #include "esp_audio_enc.h"
 #include "esp_opus_enc.h"
 #include "esp_opus_dec.h"
+#include "esp_mp3_dec.h"
 #include "esp_ae_rate_cvt.h"
 #include "esp_audio_types.h"
 
@@ -148,6 +149,8 @@ private:
     std::unique_ptr<AudioDebugger> audio_debugger_;
     void* opus_encoder_ = nullptr;
     void* opus_decoder_ = nullptr;
+    void* mp3_decoder_ = nullptr;
+    std::vector<uint8_t> mp3_residual_buffer_;
     std::mutex decoder_mutex_;
     std::mutex input_resampler_mutex_;
     esp_ae_rate_cvt_handle_t input_resampler_ = nullptr;

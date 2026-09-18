@@ -240,6 +240,10 @@ void GpioLed::OnStateChanged() {
             SetBrightness(SPEAKING_BRIGHTNESS);
             TurnOn();
             break;
+        case kDeviceStateAlarmRinging:
+            SetBrightness(ACTIVATING_BRIGHTNESS);
+            StartContinuousBlink(500);
+            break;
         case kDeviceStateUpgrading:
             SetBrightness(UPGRADING_BRIGHTNESS);
             StartContinuousBlink(100);

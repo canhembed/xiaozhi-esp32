@@ -248,3 +248,20 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
 
     xEventGroupSetBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
 }
+
+void WebsocketProtocol::SendTextMessage(const std::string& text) {
+    if (websocket_ == nullptr || !websocket_->IsConnected()) {
+        return;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    
+    char* json_str = cJSON_PrintUnformatted(root);
+    SendText(json_str);
+    free(json_str);
+    cJSON_Delete(root);
+}
+

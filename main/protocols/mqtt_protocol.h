@@ -1,4 +1,4 @@
-#ifndef MQTT_PROTOCOL_H
+﻿#ifndef MQTT_PROTOCOL_H
 #define MQTT_PROTOCOL_H
 
 
@@ -60,8 +60,10 @@ private:
     bool CryptAesCtr(const uint8_t* input, size_t input_size, const uint8_t* nonce, uint8_t* output);
 
     bool SendText(const std::string& text) override;
+    void SendTextMessage(const std::string& text) override;
     std::string GetHelloMessage();
 };
 
 
 #endif // MQTT_PROTOCOL_H
+

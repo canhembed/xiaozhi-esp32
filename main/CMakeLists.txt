@@ -18,6 +18,7 @@ set(SOURCES "audio/audio_codec.cc"
             "display/text_glyph.cc"
             "display/lcd_display.cc"
             "display/oled_display.cc"
+            "radio/radio_player.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/emote_display.cc"
             "display/lvgl_display/emoji_collection.cc"
@@ -35,6 +36,10 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
             "system_info.cc"
+            "sht30_sensor.cc"
+            "battery_monitor.cc"
+            "clock_manager.cc"
+            "weather_manager.cc"
             "application.cc"
             "ota.cc"
             "settings.cc"
@@ -567,7 +572,7 @@ elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_LCD)
     set(BOARD_DIR "bread-compact-wifi-lcd")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)
+    set(DEFAULT_EMOJI_COLLECTION otto-gif)
 elseif(CONFIG_BOARD_TYPE_LILYGO_T_CIRCLE_S3)
     set(BOARD_DIR "lilygo/t-circle-s3")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
@@ -1065,6 +1070,7 @@ idf_component_register(SRCS ${SOURCES}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES
+                        esp_http_client
                         esp_pm
                         esp_psram
                         esp_netif
@@ -1124,6 +1130,8 @@ add_custom_command(
     DEPENDS
         ${LANG_JSON}
         ${PROJECT_DIR}/scripts/gen_lang.py
+        ${LANG_SOUNDS}
+        ${COMMON_SOUNDS}
     COMMENT "Generating ${LANG_DIR} language config"
 )
 

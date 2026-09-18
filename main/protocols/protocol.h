@@ -8,6 +8,7 @@
 #include <vector>
 
 struct AudioStreamPacket {
+    int format = 0; // 0: OPUS, 1: MP3
     int sample_rate = 0;
     int frame_duration = 0;
     uint32_t timestamp = 0;
@@ -61,6 +62,7 @@ public:
     virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
     virtual bool IsAudioChannelOpened() const = 0;
     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
+    virtual void SendTextMessage(const std::string& text) = 0;
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();

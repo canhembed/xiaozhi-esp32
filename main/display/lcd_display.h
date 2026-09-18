@@ -31,7 +31,20 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
-    bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+    bool hide_subtitle_ = true;  // Control whether to hide chat messages/subtitles
+    
+    // Screensaver UI
+    lv_obj_t* screensaver_ = nullptr;
+    lv_obj_t* ss_clock_ = nullptr;
+    lv_obj_t* ss_date_ = nullptr;
+    lv_obj_t* ss_date_icon_ = nullptr;
+    lv_obj_t* ss_alarm_icon_ = nullptr;
+    lv_obj_t* ss_temp_ = nullptr;
+    lv_obj_t* ss_temp_icon_ = nullptr;
+    lv_obj_t* ss_weather_ = nullptr;
+    lv_obj_t* ss_weather_icon_ = nullptr;
+    lv_obj_t* ss_network_icon_ = nullptr;
+    bool is_screensaver_active_ = false;
 
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -51,6 +64,11 @@ public:
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
+
+    // Screensaver methods
+    void SetupScreensaver();
+    void UpdateScreensaver();
+    void ShowScreensaver(bool show);
 
     // Set whether to hide chat messages/subtitles
     void SetHideSubtitle(bool hide);

@@ -8,6 +8,7 @@
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "led/single_led.h"
+#include "sht30_sensor.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -64,6 +65,10 @@ private:
  
     Button boot_button_;
     LcdDisplay* display_;
+    adc_oneshot_unit_handle_t adc1_handle_ = nullptr;
+    AdcButton* btn_vol_up_ = nullptr;
+    AdcButton* btn_vol_down_ = nullptr;
+    AdcButton* btn_custom_ = nullptr;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -131,11 +136,71 @@ private:
             }
             app.ToggleChatState();
         });
+
+        // Initialize ADC Unit for 6-button keypad
+        adc_oneshot_unit_init_cfg_t init_config = {
+            .unit_id = ADC_UNIT_1,
+        };
+        esp_err_t err = adc_oneshot_new_unit(&init_config, &adc1_handle_);
+        if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+            // Nút 1 (Tăng âm lượng): Raw ~3690 -> khoảng 2800 mV
+            button_adc_config_t cfg_vol_up = {
+                .adc_handle = &adc1_handle_,
+                .unit_id = ADC_UNIT_1,
+                .adc_channel = ADC_CHANNEL_0,
+                .button_index = 0,
+                .min = 2650,
+                .max = 2900,
+            };
+            btn_vol_up_ = new AdcButton(cfg_vol_up);
+            btn_vol_up_->OnClick([]() {
+                auto codec = Board::GetInstance().GetAudioCodec();
+                int vol = codec->output_volume();
+                codec->SetOutputVolume(vol < 90 ? vol + 10 : 100);
+                ESP_LOGI(TAG, "Volume Up pressed: %d", codec->output_volume());
+            });
+
+            // Nút 2 (Giảm âm lượng): Raw ~3005 -> khoảng 2300 mV
+            button_adc_config_t cfg_vol_down = {
+                .adc_handle = &adc1_handle_,
+                .unit_id = ADC_UNIT_1,
+                .adc_channel = ADC_CHANNEL_0,
+                .button_index = 1,
+                .min = 2100,
+                .max = 2450,
+            };
+            btn_vol_down_ = new AdcButton(cfg_vol_down);
+            btn_vol_down_->OnClick([]() {
+                auto codec = Board::GetInstance().GetAudioCodec();
+                int vol = codec->output_volume();
+                codec->SetOutputVolume(vol > 10 ? vol - 10 : 0);
+                ESP_LOGI(TAG, "Volume Down pressed: %d", codec->output_volume());
+            });
+
+            // Nút 3 (Chức năng mở rộng): Raw ~3956 -> khoảng 3000-3200 mV
+            button_adc_config_t cfg_custom = {
+                .adc_handle = &adc1_handle_,
+                .unit_id = ADC_UNIT_1,
+                .adc_channel = ADC_CHANNEL_0,
+                .button_index = 2,
+                .min = 2950,
+                .max = 3200,
+            };
+            btn_custom_ = new AdcButton(cfg_custom);
+            btn_custom_->OnClick([]() {
+                ESP_LOGI(TAG, "Custom Button 3 pressed!");
+                // Gán tạm chức năng bật/tắt mic
+                Application::GetInstance().ToggleChatState();
+            });
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize ADC unit for buttons");
+        }
     }
 
-    // 物联网初始化，添加对 AI 可见设备
+    // Vật lý khởi tạo các công cụ
     void InitializeTools() {
         static LampController lamp(LAMP_GPIO);
+        Sht30Sensor::Initialize();
     }
 
 public:
@@ -154,6 +219,10 @@ public:
     virtual Led* GetLed() override {
         static SingleLed led(BUILTIN_LED_GPIO);
         return &led;
+    }
+
+    bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
+        return false;
     }
 
     virtual AudioCodec* GetAudioCodec() override {

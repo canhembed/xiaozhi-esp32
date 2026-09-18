@@ -15,7 +15,11 @@
 #include <cstring>
 #include <vector>
 
+#include <src/misc/lv_timer.h>
 #include "board.h"
+#include "clock_manager.h"
+#include "sht30_sensor.h"
+#include "weather_manager.h"
 
 #define TAG "LcdDisplay"
 
@@ -100,6 +104,11 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
                              int width, int height, int offset_x, int offset_y, bool mirror_x,
                              bool mirror_y, bool swap_xy)
     : LcdDisplay(panel_io, panel, width, height) {
+    // Apply offset/gap if any
+    if (offset_x != 0 || offset_y != 0) {
+        esp_lcd_panel_set_gap(panel_, offset_x, offset_y);
+    }
+
     // draw white
     std::vector<uint16_t> buffer(width_, 0xFFFF);
     for (int y = 0; y < height_; y++) {
@@ -369,6 +378,7 @@ void LcdDisplay::SetupUI() {
     auto large_icon_font = lvgl_theme->large_icon_font()->font();
 
     auto screen = lv_screen_active();
+    lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
     lv_obj_set_style_bg_color(screen, lvgl_theme->background_color(), 0);
@@ -440,7 +450,6 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_scrollbar_mode(status_bar_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_layout(status_bar_, LV_LAYOUT_NONE, 0);  // Use absolute positioning
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);        // Overlap with top_bar_
-
     notification_label_ = lv_label_create(status_bar_);
     lv_obj_set_width(notification_label_, LV_HOR_RES * 0.8);
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -834,6 +843,7 @@ void LcdDisplay::SetupUI() {
     auto large_icon_font = lvgl_theme->large_icon_font()->font();
 
     auto screen = lv_screen_active();
+    lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
     lv_obj_set_style_bg_color(screen, lvgl_theme->background_color(), 0);
@@ -1102,6 +1112,12 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!",
                  emotion);
     }
+
+    // Map default font icon 'robot_2' to 'neutral' image for compatibility with image-based emoji
+    // collections
+    if (strcmp(emotion, "robot_2") == 0) {
+        emotion = "neutral";
+    }
     if (emoji_image_ == nullptr) {
         if (setup_ui_called_) {
             ESP_LOGW(TAG,
@@ -1154,6 +1170,18 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 
             // Set initial frame and start animation
             lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
+
+            int img_w = gif_controller_->width();
+            int img_h = gif_controller_->height();
+            if (img_w > width_ || img_h > height_) {
+                int scale_w = (width_ * 256) / img_w;
+                int scale_h = (height_ * 256) / img_h;
+                int scale = scale_w < scale_h ? scale_w : scale_h;
+                lv_image_set_scale(emoji_image_, scale);
+            } else {
+                lv_image_set_scale(emoji_image_, 256);
+            }
+
             gif_controller_->Start();
 
             // Show GIF, hide others
@@ -1165,6 +1193,18 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         }
     } else {
         lv_image_set_src(emoji_image_, image->image_dsc());
+
+        int img_w = image->image_dsc()->header.w;
+        int img_h = image->image_dsc()->header.h;
+        if (img_w > width_ || img_h > height_) {
+            int scale_w = (width_ * 256) / img_w;
+            int scale_h = (height_ * 256) / img_h;
+            int scale = scale_w < scale_h ? scale_w : scale_h;
+            lv_image_set_scale(emoji_image_, scale);
+        } else {
+            lv_image_set_scale(emoji_image_, 256);
+        }
+
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1343,6 +1383,229 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
                 (chat_message_label_ != nullptr) ? lv_label_get_text(chat_message_label_) : nullptr;
             if (text != nullptr && text[0] != '\0') {
                 lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+}
+
+void LcdDisplay::SetupScreensaver() {
+    DisplayLockGuard lock(this);
+
+    if (screensaver_ != nullptr)
+        return;  // Already setup
+
+    auto screen = lv_screen_active();
+    screensaver_ = lv_obj_create(screen);
+    lv_obj_set_size(screensaver_, lv_pct(100), lv_pct(100));
+    lv_obj_align(screensaver_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(screensaver_, 0, 0);
+    lv_obj_set_style_bg_color(screensaver_, lv_color_black(), 0);  // Black background
+    lv_obj_set_style_bg_opa(screensaver_, LV_OPA_COVER, 0);        // Fully opaque
+    lv_obj_set_style_border_width(screensaver_, 0, 0);
+    lv_obj_set_style_pad_all(screensaver_, 0, 0);                    // Remove padding
+    lv_obj_remove_flag(screensaver_, LV_OBJ_FLAG_SCROLLABLE);        // Remove scrollability
+    lv_obj_set_scrollbar_mode(screensaver_, LV_SCROLLBAR_MODE_OFF);  // Force hide scrollbars
+    lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+
+    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = lvgl_theme->text_font()->font();
+    auto icon_font = lvgl_theme->icon_font()->font();
+
+    // Clock label
+    ss_clock_ = lv_label_create(screensaver_);
+    lv_obj_set_style_text_font(ss_clock_, text_font, 0);
+    lv_obj_set_style_text_color(ss_clock_, lv_color_white(), 0);
+    lv_obj_align(ss_clock_, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_set_style_transform_scale(ss_clock_, 512, 0);  // Scale 2x
+    lv_label_set_text(ss_clock_, "00:00");
+
+    // Network icon
+    ss_network_icon_ = lv_label_create(screensaver_);
+    lv_obj_set_style_text_font(ss_network_icon_, icon_font, 0);
+    lv_obj_set_style_text_color(ss_network_icon_, lv_color_white(), 0);
+    lv_obj_align(ss_network_icon_, LV_ALIGN_TOP_RIGHT, -5, 5);
+    lv_label_set_text(ss_network_icon_, "");
+
+    // Date container
+    lv_obj_t* date_cont = lv_obj_create(screensaver_);
+    lv_obj_remove_style_all(date_cont);
+    lv_obj_set_size(date_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_layout(date_cont, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(date_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(date_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(date_cont, 4, 0);
+    lv_obj_align(date_cont, LV_ALIGN_CENTER, 0, 22);
+
+    ss_date_icon_ = lv_label_create(date_cont);
+    lv_obj_set_style_text_font(ss_date_icon_, icon_font, 0);
+    lv_obj_set_style_text_color(ss_date_icon_, lv_color_make(200, 200, 200), 0);
+    lv_label_set_text(ss_date_icon_, MATERIAL_SYMBOLS_CALENDAR_MONTH);
+
+    ss_date_ = lv_label_create(date_cont);
+    lv_obj_set_style_text_font(ss_date_, text_font, 0);
+    lv_obj_set_style_text_color(ss_date_, lv_color_make(200, 200, 200), 0);
+    lv_label_set_text(ss_date_, "--/--");
+
+    ss_alarm_icon_ = lv_label_create(date_cont);
+    lv_obj_set_style_text_font(ss_alarm_icon_, icon_font, 0);
+    lv_obj_set_style_text_color(ss_alarm_icon_, lv_color_make(200, 200, 200), 0);
+    lv_label_set_text(ss_alarm_icon_, MATERIAL_SYMBOLS_ALARM);
+    lv_obj_add_flag(ss_alarm_icon_, LV_OBJ_FLAG_HIDDEN); // Hidden by default
+
+    // Weather container
+    lv_obj_t* weather_cont = lv_obj_create(screensaver_);
+    lv_obj_remove_style_all(weather_cont);
+    lv_obj_set_size(weather_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_layout(weather_cont, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(weather_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(weather_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(weather_cont, 4, 0);
+    lv_obj_align(weather_cont, LV_ALIGN_TOP_MID, 15, 5);
+    lv_obj_set_style_transform_scale(weather_cont, 200, 0);
+
+    ss_weather_icon_ = lv_label_create(weather_cont);
+    lv_obj_set_style_text_font(ss_weather_icon_, icon_font, 0);
+    lv_obj_set_style_text_color(ss_weather_icon_, lv_color_white(), 0);
+    lv_label_set_text(ss_weather_icon_, MATERIAL_SYMBOLS_DEVICE_THERMOSTAT);
+
+    ss_weather_ = lv_label_create(weather_cont);
+    lv_obj_set_style_text_font(ss_weather_, text_font, 0);
+    lv_obj_set_style_text_color(ss_weather_, lv_color_white(), 0);
+    lv_label_set_text(ss_weather_, "--°C, --%");
+
+    // Room temp container
+    lv_obj_t* temp_cont = lv_obj_create(screensaver_);
+    lv_obj_remove_style_all(temp_cont);
+    lv_obj_set_size(temp_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_layout(temp_cont, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(temp_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(temp_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(temp_cont, 4, 0);
+    lv_obj_align(temp_cont, LV_ALIGN_BOTTOM_MID, 15, -3);
+    lv_obj_set_style_transform_scale(temp_cont, 200, 0);
+
+    ss_temp_icon_ = lv_label_create(temp_cont);
+    lv_obj_set_style_text_font(ss_temp_icon_, icon_font, 0);
+    lv_obj_set_style_text_color(ss_temp_icon_, lv_color_white(), 0);
+    lv_label_set_text(ss_temp_icon_, MATERIAL_SYMBOLS_HOME);
+
+    ss_temp_ = lv_label_create(temp_cont);
+    lv_obj_set_style_text_font(ss_temp_, text_font, 0);
+    lv_obj_set_style_text_color(ss_temp_, lv_color_white(), 0);
+    lv_label_set_text(ss_temp_, "--°C, --%");
+
+    // Create an LVGL timer to update the screensaver every second
+    lv_timer_create(
+        [](lv_timer_t* timer) {
+            LcdDisplay* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
+            if (display->is_screensaver_active_) {
+                display->UpdateScreensaver();
+            }
+        },
+        1000, this);
+}
+
+void LcdDisplay::UpdateScreensaver() {
+    DisplayLockGuard lock(this);
+    if (!screensaver_)
+        return;
+
+    // Update Clock & Date
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+
+    char time_str[16];
+    if (timeinfo.tm_sec % 2 == 0) {
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+    } else {
+        snprintf(time_str, sizeof(time_str), "%02d %02d", timeinfo.tm_hour, timeinfo.tm_min);
+    }
+    lv_label_set_text(ss_clock_, time_str);
+
+    // Update Date
+    const char* days[] = {"CN", "T2", "T3", "T4", "T5", "T6", "T7"};
+    char date_str[32];
+
+    snprintf(date_str, sizeof(date_str), "%s, %02d/%02d",
+             days[timeinfo.tm_wday], timeinfo.tm_mday, timeinfo.tm_mon + 1);
+    lv_label_set_text(ss_date_, date_str);
+
+    // Check for active alarms
+    bool has_active_alarm = false;
+    for (const auto& alarm : ClockManager::GetInstance().GetAlarms()) {
+        if (alarm.enabled) {
+            has_active_alarm = true;
+            break;
+        }
+    }
+
+    if (has_active_alarm) {
+        lv_obj_remove_flag(ss_alarm_icon_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ss_alarm_icon_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Fix scaling pivot to center to avoid shifting
+    lv_obj_update_layout(ss_clock_);
+    lv_obj_set_style_transform_pivot_x(ss_clock_, lv_obj_get_width(ss_clock_) / 2, 0);
+    lv_obj_set_style_transform_pivot_y(ss_clock_, lv_obj_get_height(ss_clock_) / 2, 0);
+
+    // Update Network Icon
+    const char* network_icon = Board::GetInstance().GetNetworkStateIcon();
+    if (network_icon != nullptr) {
+        if (strcmp(network_icon, MATERIAL_SYMBOLS_WIFI_OFF) == 0) {
+            lv_label_set_text(ss_network_icon_, network_icon);
+            lv_obj_remove_flag(ss_network_icon_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ss_network_icon_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // Update Room Temp
+    float temp, hum;
+    if (Sht30Sensor::Read(temp, hum) == ESP_OK) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f°C, %.0f%%", temp, hum);
+        lv_label_set_text(ss_temp_, buf);
+    } else {
+        lv_label_set_text(ss_temp_, "--°C, --%");
+    }
+
+    // Update Weather
+    auto weather = WeatherManager::GetInstance().GetCurrentWeather();
+    if (weather.is_valid) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.1f°C, %.0f%%", weather.temperature, weather.humidity);
+        lv_label_set_text(ss_weather_, buf);
+    } else {
+        lv_label_set_text(ss_weather_, "--°C, --%");
+    }
+}
+
+void LcdDisplay::ShowScreensaver(bool show) {
+    DisplayLockGuard lock(this);
+
+    if (show && screensaver_ == nullptr) {
+        SetupScreensaver();
+    }
+
+    if (screensaver_ != nullptr) {
+        is_screensaver_active_ = show;
+        auto backlight = Board::GetInstance().GetBacklight();
+        
+        if (show) {
+            UpdateScreensaver();  // Immediate update before showing
+            lv_obj_remove_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(screensaver_);
+            if (backlight) {
+                backlight->SetBrightness(5); // Dim backlight to 5% to save battery and protect eyes
+            }
+        } else {
+            lv_obj_add_flag(screensaver_, LV_OBJ_FLAG_HIDDEN);
+            if (backlight) {
+                backlight->RestoreBrightness(); // Restore to normal brightness
             }
         }
     }

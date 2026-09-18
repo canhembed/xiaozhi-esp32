@@ -531,3 +531,15 @@ bool MqttProtocol::IsAudioChannelOpened() const {
     std::lock_guard<std::mutex> lock(channel_mutex_);
     return udp_ != nullptr && !error_occurred_ && !IsTimeout();
 }
+
+void MqttProtocol::SendTextMessage(const std::string& text) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    char* json_str = cJSON_PrintUnformatted(root);
+    SendText(json_str);
+    free(json_str);
+    cJSON_Delete(root);
+}

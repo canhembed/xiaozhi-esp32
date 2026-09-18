@@ -153,6 +153,10 @@ void SingleLed::OnStateChanged() {
             SetColor(0, DEFAULT_BRIGHTNESS, 0);
             TurnOn();
             break;
+        case kDeviceStateAlarmRinging:
+            SetColor(HIGH_BRIGHTNESS, 0, 0); // Red
+            StartContinuousBlink(500);
+            break;
         case kDeviceStateUpgrading:
             SetColor(0, DEFAULT_BRIGHTNESS, 0);
             StartContinuousBlink(100);

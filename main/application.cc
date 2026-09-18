@@ -12,11 +12,16 @@
 #include "websocket_protocol.h"
 
 #include <driver/gpio.h>
+#include "sht30_sensor.h"
+#include "battery_monitor.h"
+#include "clock_manager.h"
+#include "weather_manager.h"
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
 #include <limits>
+#include "esp_adc/adc_oneshot.h"
 
 #define TAG "Application"
 
@@ -55,7 +60,13 @@ Application::~Application() {
     vEventGroupDelete(event_group_);
 }
 
-bool Application::SetDeviceState(DeviceState state) { return state_machine_.TransitionTo(state); }
+bool Application::SetDeviceState(DeviceState state) { 
+    bool res = state_machine_.TransitionTo(state); 
+    if (res && state != kDeviceStateIdle) {
+        Board::GetInstance().GetDisplay()->ShowScreensaver(false);
+    }
+    return res;
+}
 
 void Application::Initialize() {
     auto& board = Board::GetInstance();
@@ -66,6 +77,12 @@ void Application::Initialize() {
     display->SetupUI();
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+
+    BatteryMonitor::Initialize();
+    ClockManager::GetInstance().Initialize();
+    WeatherManager::GetInstance().Initialize();
+
+
 
     // Setup the audio service
     auto codec = board.GetAudioCodec();
@@ -272,6 +289,10 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            
+            if (GetDeviceState() == kDeviceStateIdle && clock_ticks_ == 15) {
+                display->ShowScreensaver(true);
+            }
 
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -750,7 +771,7 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
+        display->SetEmotion("robot_2");
         display->SetChatMessage("system", "");
     }
 }
@@ -763,6 +784,15 @@ void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_
 
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
+
+    if (state == kDeviceStateAlarmRinging || state == kDeviceStateRadioPlaying) {
+        audio_service_.ResetDecoder(); // Stop audio immediately
+        if (state == kDeviceStateRadioPlaying) {
+            StopRadio();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        state = kDeviceStateIdle;
+    }
 
     if (state == kDeviceStateNotifying) {
         StopNotification();
@@ -889,8 +919,9 @@ void Application::HandleWakeWordDetectedEvent() {
 
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
-    } else if (state == kDeviceStateNotifying) {
-        StopNotification();
+    } else if (state == kDeviceStateNotifying || state == kDeviceStateRadioPlaying) {
+        if (state == kDeviceStateNotifying) StopNotification();
+        if (state == kDeviceStateRadioPlaying) StopRadio();
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
@@ -986,25 +1017,35 @@ void Application::HandleStateChangedEvent() {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
+    display->ShowScreensaver(false);
     led->OnStateChanged();
+
+    // Independent alarm volume logic
+    if (new_state == kDeviceStateAlarmRinging) {
+        pre_alarm_volume_ = board.GetAudioCodec()->output_volume();
+        board.GetAudioCodec()->SetOutputVolume(ClockManager::GetInstance().GetAlarmVolume());
+    } else if (pre_alarm_volume_ >= 0) {
+        board.GetAudioCodec()->SetOutputVolume(pre_alarm_volume_);
+        pre_alarm_volume_ = -1;
+    }
 
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();    // Clear messages first
-            display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
+            display->SetEmotion("robot_2");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("robot_2");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("robot_2");
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -1035,6 +1076,13 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::SPEAKING);
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+            break;
+        case kDeviceStateAlarmRinging:
+            display->SetStatus("Alarm");
+            display->SetEmotion("alarm");
+            display->SetChatMessage("system", "Press button to stop");
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1077,7 +1125,7 @@ void Application::ConfigureWakeWordForListening() {
 }
 
 void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles) {
-    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy() || radio_player_.IsPlaying()) {
         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
         return;
     }
@@ -1129,6 +1177,30 @@ void Application::StopNotification() {
     board.GetDisplay()->SetChatMessage("assistant", "");
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
     if (GetDeviceState() == kDeviceStateNotifying) {
+        notify_player_.Stop();
+        SetDeviceState(kDeviceStateIdle);
+    }
+}
+
+void Application::StartRadio(const std::string& url) {
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy() || radio_player_.IsPlaying()) {
+        ESP_LOGW(TAG, "Ignoring radio message while device is busy");
+        return;
+    }
+
+    if (radio_player_.Start(url)) {
+        if (!SetDeviceState(kDeviceStateRadioPlaying)) {
+            radio_player_.Stop();
+        } else {
+            Board::GetInstance().GetDisplay()->SetStatus("Radio");
+            Board::GetInstance().GetDisplay()->SetChatMessage("system", "Playing Radio...");
+        }
+    }
+}
+
+void Application::StopRadio() {
+    if (GetDeviceState() == kDeviceStateRadioPlaying) {
+        radio_player_.Stop();
         SetDeviceState(kDeviceStateIdle);
     }
 }
@@ -1257,10 +1329,11 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
                 BeginWakeWordInvoke(wake_word);
             }
         });
-    } else if (state == kDeviceStateNotifying) {
-        Schedule([this, wake_word]() {
-            if (GetDeviceState() == kDeviceStateNotifying) {
-                StopNotification();
+    } else if (state == kDeviceStateNotifying || state == kDeviceStateRadioPlaying) {
+        Schedule([this, wake_word, state]() {
+            if (GetDeviceState() == state) {
+                if (state == kDeviceStateNotifying) StopNotification();
+                if (state == kDeviceStateRadioPlaying) StopRadio();
                 BeginWakeWordInvoke(wake_word);
             }
         });
@@ -1270,6 +1343,19 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         Schedule([this]() {
             if (protocol_) {
                 protocol_->CloseAudioChannel();
+            }
+        });
+    } else if (state == kDeviceStateAlarmRinging || state == kDeviceStateRadioPlaying) {
+        Schedule([this, wake_word, state]() {
+            if (GetDeviceState() == state) {
+                audio_service_.ResetDecoder(); // Stop audio immediately
+                if (state == kDeviceStateRadioPlaying) {
+                    StopRadio();
+                }
+                SetDeviceState(kDeviceStateIdle);
+                if (!wake_word.empty()) {
+                    BeginWakeWordInvoke(wake_word);
+                }
             }
         });
     }
@@ -1337,6 +1423,8 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
 
+bool Application::IsPlaybackIdle() { return audio_service_.IsPlaybackIdle(); }
+
 void Application::ResetProtocol() {
     Schedule([this]() {
         if (GetDeviceState() == kDeviceStateNotifying) {
@@ -1348,5 +1436,31 @@ void Application::ResetProtocol() {
         }
         // Reset protocol
         protocol_.reset();
+    });
+}
+
+void Application::Chat(const std::string& text) {
+    Schedule([this, text]() {
+        if (!protocol_) return;
+        
+        if (GetDeviceState() == kDeviceStateIdle) {
+            SetDeviceState(kDeviceStateConnecting);
+            Schedule([this, text]() {
+                if (GetDeviceState() == kDeviceStateConnecting) {
+                    auto& board = Board::GetInstance();
+                    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+                    if (!protocol_->IsAudioChannelOpened()) {
+                        if (!protocol_->OpenAudioChannel()) {
+                            SetDeviceState(kDeviceStateIdle);
+                            return;
+                        }
+                    }
+                    SetListeningMode(kListeningModeAutoStop);
+                }
+                protocol_->SendTextMessage(text);
+            });
+        } else {
+            protocol_->SendTextMessage(text);
+        }
     });
 }

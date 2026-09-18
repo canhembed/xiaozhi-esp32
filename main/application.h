@@ -20,6 +20,7 @@
 #include "device_state.h"
 #include "device_state_machine.h"
 #include "notify/notify_player.h"
+#include "radio/radio_player.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -126,6 +127,13 @@ public:
      */
     void ResetProtocol();
 
+    // Radio
+    void StartRadio(const std::string& url);
+    void StopRadio();
+
+    bool IsPlaybackIdle();
+    void Chat(const std::string& text);
+
 private:
     Application();
     ~Application();
@@ -141,6 +149,7 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     NotifyPlayer notify_player_;
+    RadioPlayer radio_player_;
     uint32_t notification_playback_id_ = 0;
     std::unique_ptr<Ota> ota_;
 
@@ -152,6 +161,7 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
     int clock_ticks_ = 0;
+    int pre_alarm_volume_ = -1;
     TaskHandle_t activation_task_handle_ = nullptr;
 
 
@@ -168,9 +178,13 @@ private:
     void BeginWakeWordInvoke(const std::string& wake_word);
     void ContinueWakeWordInvoke(const std::string& wake_word);
     void StartListeningAudio();
-    void ConfigureWakeWordForListening();
-    void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles);
+    /**
+     * Start/Stop notification
+     */
+    void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles = {});
     void StopNotification();
+
+
     void HandleNotificationFinished(uint32_t playback_id, bool success);
 
     // Activation task (runs in background)
@@ -180,6 +194,7 @@ private:
     void CheckAssetsVersion();
     void CheckNewVersion();
     void InitializeProtocol();
+    void ConfigureWakeWordForListening();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;

@@ -1,4 +1,4 @@
-#ifndef _WEBSOCKET_PROTOCOL_H_
+﻿#ifndef _WEBSOCKET_PROTOCOL_H_
 #define _WEBSOCKET_PROTOCOL_H_
 
 
@@ -29,6 +29,8 @@ private:
     void ParseServerHello(const cJSON* root);
     bool SendText(const std::string& text) override;
     std::string GetHelloMessage();
+    void SendTextMessage(const std::string& text) override;
 };
 
 #endif
+

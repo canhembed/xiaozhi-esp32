@@ -44,6 +44,9 @@ AudioService::~AudioService() {
     if (opus_decoder_ != nullptr) {
         esp_opus_dec_close(opus_decoder_);
     }
+    if (mp3_decoder_ != nullptr) {
+        esp_mp3_dec_close(mp3_decoder_);
+    }
     if (input_resampler_ != nullptr) {
         esp_ae_rate_cvt_close(input_resampler_);
     }
@@ -59,11 +62,16 @@ void AudioService::Initialize(AudioCodec* codec) {
     esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(codec->output_sample_rate(), OPUS_FRAME_DURATION_MS);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
+        ESP_LOGE(TAG, "Failed to create opus decoder, error code: %d", ret);
     } else {
         decoder_sample_rate_ = codec->output_sample_rate();
         decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
         decoder_frame_size_ = decoder_sample_rate_ / 1000 * OPUS_FRAME_DURATION_MS;
+    }
+
+    ret = esp_mp3_dec_open(nullptr, 0, &mp3_decoder_);
+    if (mp3_decoder_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create mp3 decoder, error code: %d", ret);
     }
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
     ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), &opus_encoder_);
@@ -385,15 +393,15 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
+            bool decoded = false;
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
             task->playback_id = packet->playback_id;
             task->media_position_ms = packet->media_position_ms;
 
-            SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
-            bool decoded = false;
-            if (opus_decoder_ != nullptr) {
+            if (packet->format == 0 && opus_decoder_ != nullptr) { // 0 is OPUS
+                SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
                 task->pcm.resize(decoder_frame_size_);
                 esp_audio_dec_in_raw_t raw = {
                     .buffer = (uint8_t *)(packet->payload.data()),
@@ -426,8 +434,79 @@ void AudioService::OpusCodecTask() {
                 } else {
                     ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
                 }
+            } else if (packet->format == 1 && mp3_decoder_ != nullptr) { // 1 is MP3
+                // Prepend residual data if any
+                if (!mp3_residual_buffer_.empty()) {
+                    packet->payload.insert(packet->payload.begin(), mp3_residual_buffer_.begin(), mp3_residual_buffer_.end());
+                    mp3_residual_buffer_.clear();
+                }
+
+                esp_audio_dec_in_raw_t raw = {
+                    .buffer = (uint8_t*)packet->payload.data(),
+                    .len = (uint32_t)packet->payload.size(),
+                    .consumed = 0,
+                    .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
+                };
+                
+                std::vector<int16_t> full_pcm;
+                std::vector<int16_t> temp_pcm(4608); // Max MP3 frame size buffer
+                bool decode_success = false;
+
+                while (raw.len > 0) {
+                    esp_audio_dec_out_frame_t out_frame = {
+                        .buffer = (uint8_t*)temp_pcm.data(),
+                        .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
+                    };
+                    esp_audio_dec_info_t dec_info = {};
+                    std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+                    auto ret = esp_mp3_dec_decode(mp3_decoder_, &raw, &out_frame, &dec_info);
+                    decoder_lock.unlock();
+
+                    if (ret == ESP_AUDIO_ERR_OK) {
+                        size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
+                        if (dec_info.sample_rate != codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                            uint32_t target_size = 0;
+                            esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                            std::vector<int16_t> resampled(target_size);
+                            uint32_t actual_output = target_size;
+                            esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
+                                                    (esp_ae_sample_t)resampled.data(), &actual_output);
+                            full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                        } else {
+                            int16_t* pcm_data = (int16_t*)out_frame.buffer;
+                            full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                        }
+                        decode_success = true;
+                        
+                        // Advance raw buffer
+                        if (raw.consumed > 0 && raw.consumed <= raw.len) {
+                            raw.buffer += raw.consumed;
+                            raw.len -= raw.consumed;
+                        } else {
+                            break; // Avoid infinite loop if consumed is 0
+                        }
+                    } else if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                        // Needs more data to decode a frame. Buffer the remaining data.
+                        mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                        break; 
+                    } else if (ret == ESP_AUDIO_ERR_FAIL) {
+                        // Skip one byte to search for next sync word
+                        if (raw.len > 0) {
+                            raw.buffer++;
+                            raw.len--;
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "Failed to decode mp3 audio, error code: %d", ret);
+                        break;
+                    }
+                }
+                
+                if (decode_success) {
+                    task->pcm = std::move(full_pcm);
+                    decoded = true;
+                }
             } else {
-                ESP_LOGE(TAG, "Audio decoder is not configured");
+                ESP_LOGE(TAG, "Audio decoder is not configured or unsupported format");
             }
 
             lock.lock();
@@ -781,6 +860,10 @@ void AudioService::ResetDecoder() {
         std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
         if (opus_decoder_ != nullptr) {
             esp_opus_dec_reset(opus_decoder_);
+        }
+        if (mp3_decoder_ != nullptr) {
+            esp_mp3_dec_reset(mp3_decoder_);
+            mp3_residual_buffer_.clear();
         }
         decoder_lock.unlock();
         timestamp_queue_.clear();
