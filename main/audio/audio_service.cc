@@ -489,15 +489,12 @@ void AudioService::OpusCodecTask() {
                         // Needs more data to decode a frame. Buffer the remaining data.
                         mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
                         break; 
-                    } else if (ret == ESP_AUDIO_ERR_FAIL) {
-                        // Skip one byte to search for next sync word
-                        if (raw.len > 0) {
-                            raw.buffer++;
-                            raw.len--;
-                        }
                     } else {
-                        ESP_LOGE(TAG, "Failed to decode mp3 audio, error code: %d", ret);
-                        break;
+                        // Decode failed (-1, -7, etc). Skip bytes to search for next sync word.
+                        size_t skip = (raw.consumed > 0) ? raw.consumed : 1;
+                        if (skip > raw.len) skip = raw.len;
+                        raw.buffer += skip;
+                        raw.len -= skip;
                     }
                 }
                 
