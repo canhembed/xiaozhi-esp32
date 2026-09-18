@@ -1037,6 +1037,14 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("robot_2");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            
+            if (!pending_radio_url_.empty()) {
+                std::string url = pending_radio_url_;
+                pending_radio_url_.clear();
+                Schedule([this, url]() {
+                    StartRadio(url);
+                });
+            }
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1044,6 +1052,17 @@ void Application::HandleStateChangedEvent() {
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
+            if (!pending_radio_url_.empty()) {
+                ESP_LOGI(TAG, "Aborting listening to play pending radio");
+                if (protocol_) {
+                    protocol_->SendStopListening();
+                }
+                Schedule([this]() {
+                    SetDeviceState(kDeviceStateIdle);
+                });
+                break;
+            }
+
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("robot_2");
 
@@ -1183,7 +1202,14 @@ void Application::StopNotification() {
 }
 
 void Application::StartRadio(const std::string& url) {
-    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy() || radio_player_.IsPlaying()) {
+    auto state = GetDeviceState();
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+        ESP_LOGI(TAG, "Device is busy (state: %d), scheduling radio to play after idle", (int)state);
+        pending_radio_url_ = url;
+        return;
+    }
+
+    if (state != kDeviceStateIdle || notify_player_.IsBusy() || radio_player_.IsPlaying()) {
         ESP_LOGW(TAG, "Ignoring radio message while device is busy");
         return;
     }
