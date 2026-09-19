@@ -153,9 +153,10 @@ void RadioPlayer::WorkerLoop() {
             std::vector<char> buffer(kHttpReadBufferSize);
             std::vector<uint8_t> accumulator;
 
-            // Pre-buffering: Start with a large chunk (32KB) to build a buffer before playback starts.
-            // This delays playback by a few seconds but prevents network jitter from causing stutters.
-            size_t current_chunk_size = 32768;
+            // Pre-buffering: MP3 streams are typically higher bitrate (128kbps+), so they need a larger 
+            // buffer (64KB = 4 seconds) to prevent stuttering. AAC is typically lower bitrate (64kbps),
+            // so 32KB is enough for a 4-second buffer, keeping startup fast for both.
+            size_t current_chunk_size = (audio_format == kAudioFormatMp3) ? 65536 : 32768;
             accumulator.reserve(current_chunk_size);
 
             while (!cancelled_) {
