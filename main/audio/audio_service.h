@@ -1,30 +1,33 @@
 #ifndef AUDIO_SERVICE_H
 #define AUDIO_SERVICE_H
 
-#include <memory>
 #include <atomic>
-#include <deque>
-#include <condition_variable>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <memory>
 #include <mutex>
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/event_groups.h>
+
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/task.h>
 #include <model_path.h>
-#include "esp_audio_enc.h"
-#include "esp_opus_enc.h"
-#include "esp_opus_dec.h"
-#include "esp_mp3_dec.h"
 #include "esp_ae_rate_cvt.h"
+#include "esp_audio_enc.h"
 #include "esp_audio_types.h"
+#include "esp_mp3_dec.h"
+#include "esp_opus_dec.h"
+#include "esp_opus_enc.h"
+
 
 #include "audio_codec.h"
 #include "audio_debugger.h"
 #include "audio_engine.h"
-#include "protocol.h"
 #include "ogg_demuxer.h"
+#include "protocol.h"
+
 
 /*
  * There are two types of audio data flow:
@@ -32,9 +35,10 @@
  * 2. (Server) -> {Decode Queue} -> [Opus Decoder] -> {Playback Queue} -> (Speaker)
  *
  * We use dedicated tasks for input, output, and Opus encoding/decoding.
- * 
- * Decode Queue and Send Queue are the main queues, because Opus packets are quite smaller than PCM packets.
- * 
+ *
+ * Decode Queue and Send Queue are the main queues, because Opus packets are quite smaller than PCM
+ * packets.
+ *
  */
 
 #define OPUS_FRAME_DURATION_MS 60
@@ -48,32 +52,35 @@
 #define AUDIO_POWER_TIMEOUT_MS 15000
 #define AUDIO_POWER_CHECK_INTERVAL_MS 1000
 
-#define AS_EVENT_AUDIO_TESTING_RUNNING      (1 << 0)
-#define AS_EVENT_WAKE_WORD_RUNNING          (1 << 1)
-#define AS_EVENT_AUDIO_PROCESSOR_RUNNING    (1 << 2)
-#define AS_EVENT_AUDIO_INPUT_STOP_REQUEST   (1 << 4)
+#define AS_EVENT_AUDIO_TESTING_RUNNING (1 << 0)
+#define AS_EVENT_WAKE_WORD_RUNNING (1 << 1)
+#define AS_EVENT_AUDIO_PROCESSOR_RUNNING (1 << 2)
+#define AS_EVENT_AUDIO_INPUT_STOP_REQUEST (1 << 4)
 
-#define AS_OPUS_GET_FRAME_DRU_ENUM(duration_ms)                   \
-    ((duration_ms) == 5 ? ESP_OPUS_ENC_FRAME_DURATION_5_MS :      \
-     (duration_ms) == 10 ? ESP_OPUS_ENC_FRAME_DURATION_10_MS :    \
-     (duration_ms) == 20 ? ESP_OPUS_ENC_FRAME_DURATION_20_MS :    \
-     (duration_ms) == 40 ? ESP_OPUS_ENC_FRAME_DURATION_40_MS :    \
-     (duration_ms) == 60 ? ESP_OPUS_ENC_FRAME_DURATION_60_MS :    \
-     (duration_ms) == 80 ? ESP_OPUS_ENC_FRAME_DURATION_80_MS :    \
-     (duration_ms) == 100 ? ESP_OPUS_ENC_FRAME_DURATION_100_MS :  \
-     (duration_ms) == 120 ? ESP_OPUS_ENC_FRAME_DURATION_120_MS : -1)
+#define AS_OPUS_GET_FRAME_DRU_ENUM(duration_ms)                  \
+    ((duration_ms) == 5     ? ESP_OPUS_ENC_FRAME_DURATION_5_MS   \
+     : (duration_ms) == 10  ? ESP_OPUS_ENC_FRAME_DURATION_10_MS  \
+     : (duration_ms) == 20  ? ESP_OPUS_ENC_FRAME_DURATION_20_MS  \
+     : (duration_ms) == 40  ? ESP_OPUS_ENC_FRAME_DURATION_40_MS  \
+     : (duration_ms) == 60  ? ESP_OPUS_ENC_FRAME_DURATION_60_MS  \
+     : (duration_ms) == 80  ? ESP_OPUS_ENC_FRAME_DURATION_80_MS  \
+     : (duration_ms) == 100 ? ESP_OPUS_ENC_FRAME_DURATION_100_MS \
+     : (duration_ms) == 120 ? ESP_OPUS_ENC_FRAME_DURATION_120_MS \
+                            : -1)
 
-#define AS_OPUS_ENC_CONFIG() {                                                                                    \
-        .sample_rate        = ESP_AUDIO_SAMPLE_RATE_16K,                                                          \
-        .channel            = ESP_AUDIO_MONO,                                                                     \
-        .bits_per_sample    = ESP_AUDIO_BIT16,                                                                    \
-        .bitrate            = ESP_OPUS_BITRATE_AUTO,                                                              \
-        .frame_duration     = (esp_opus_enc_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(OPUS_FRAME_DURATION_MS),  \
-        .application_mode   = ESP_OPUS_ENC_APPLICATION_AUDIO,                                                     \
-        .complexity         = 0,                                                                                  \
-        .enable_fec         = false,                                                                              \
-        .enable_dtx         = true,                                                                               \
-        .enable_vbr         = true,                                                                               \
+#define AS_OPUS_ENC_CONFIG()                                                                   \
+    {                                                                                          \
+        .sample_rate = ESP_AUDIO_SAMPLE_RATE_16K,                                              \
+        .channel = ESP_AUDIO_MONO,                                                             \
+        .bits_per_sample = ESP_AUDIO_BIT16,                                                    \
+        .bitrate = ESP_OPUS_BITRATE_AUTO,                                                      \
+        .frame_duration =                                                                      \
+            (esp_opus_enc_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(OPUS_FRAME_DURATION_MS), \
+        .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO,                                    \
+        .complexity = 0,                                                                       \
+        .enable_fec = false,                                                                   \
+        .enable_dtx = true,                                                                    \
+        .enable_vbr = true,                                                                    \
     }
 
 struct AudioServiceCallbacks {
@@ -85,7 +92,6 @@ struct AudioServiceCallbacks {
     std::function<void(void)> on_playback_drained;
     std::function<void(uint32_t playback_id, uint32_t media_position_ms)> on_playback_progress;
 };
-
 
 enum AudioTaskType {
     kAudioTaskTypeEncodeToSendQueue,
@@ -123,8 +129,12 @@ public:
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
     bool IsPlaybackIdle();
-    bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
-    bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
+    bool IsWakeWordRunning() const {
+        return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING;
+    }
+    bool IsAudioProcessorRunning() const {
+        return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING;
+    }
     bool IsAfeWakeWord();
 
     void EnableWakeWordDetection(bool enable);
@@ -151,11 +161,13 @@ private:
     void* opus_decoder_ = nullptr;
     void* aac_decoder_ = nullptr;
     std::vector<uint8_t> aac_residual_buffer_;
+    void* mp3_decoder_ = nullptr;
+    std::vector<uint8_t> mp3_residual_buffer_;
     std::mutex decoder_mutex_;
     std::mutex input_resampler_mutex_;
     esp_ae_rate_cvt_handle_t input_resampler_ = nullptr;
     esp_ae_rate_cvt_handle_t output_resampler_ = nullptr;
-    
+
     // Encoder/Decoder state
     int encoder_sample_rate_ = 16000;
     int encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;

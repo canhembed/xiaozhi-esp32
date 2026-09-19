@@ -234,14 +234,14 @@ void McpServer::AddUserOnlyTools() {
 
     AddTool(
         "self.play_radio",
-        "Play an internet radio stream (MP3/OGG). Provide the stream URL. "
+        "Play an internet radio stream (MP3/AAC). Provide the stream URL. "
         "Examples:\n"
-        "- Ha Noi Community Radio: https://ha-noi-community-radio.radiocult.fm/stream\n"
+        "- Ha Noi Community Radio: http://ha-noi-community-radio.radiocult.fm/stream\n"
         "- Lofi Hip Hop: http://stream.zeno.fm/f3wvbbqmdg8uv\n"
-        "- Nhạc Trữ Tình (Bolero/Romantic): https://stream.zeno.fm/4q7y9hvkp2zuv\n"
+        "- Nhạc Trữ Tình (Bolero/Romantic): http://stream.zeno.fm/4q7y9hvkp2zuv\n"
         "- Radio Zeno 2: http://stream.zeno.fm/yvzaxu2qe7duv\n"
         "- V-Pop: http://stream.zeno.fm/5cyfrgpebkhvv\n"
-        "If the user asks for a specific station, you can use these or provide your own MP3 URL.",
+        "IMPORTANT: Always use http:// not https:// for radio stream URLs.",
         PropertyList({Property("url", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ReturnValue {
             std::string url = properties["url"].value<std::string>();
@@ -289,6 +289,7 @@ void McpServer::AddUserOnlyTools() {
                         // Limit response size to prevent OOM
                         if (response.length() > 4096)
                             break;
+                    }
                     // Replace https with http to save device memory (avoid SSL handshake)
                     size_t pos = 0;
                     while ((pos = response.find("https://", pos)) != std::string::npos) {

@@ -1,6 +1,7 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <decoder/impl/esp_aac_dec.h>
+#include <decoder/impl/esp_mp3_dec.h>
 #include <cstring>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
@@ -48,6 +49,9 @@ AudioService::~AudioService() {
     if (aac_decoder_ != nullptr) {
         esp_aac_dec_close(aac_decoder_);
     }
+    if (mp3_decoder_ != nullptr) {
+        esp_mp3_dec_close(mp3_decoder_);
+    }
     if (input_resampler_ != nullptr) {
         esp_ae_rate_cvt_close(input_resampler_);
     }
@@ -71,6 +75,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     }
 
     esp_aac_dec_cfg_t aac_dec_cfg = ESP_AAC_DEC_CONFIG_DEFAULT();
+    aac_dec_cfg.aac_plus_enable = true; // Support HE-AAC / AAC+ streams from internet radio
     ret = esp_aac_dec_open(&aac_dec_cfg, sizeof(aac_dec_cfg), &aac_decoder_);
     if (aac_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create AAC decoder, error code: %d", ret);
@@ -452,9 +457,9 @@ void AudioService::OpusCodecTask() {
                     .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
                 };
 
-                // AAC frame output: max 2048 samples per channel, 2 ch = 4096 int16
+                // AAC frame output: max 1024 samples * 2ch for AAC-LC, 4096 int16 is sufficient
                 std::vector<int16_t> full_pcm;
-                std::vector<int16_t> temp_pcm(8192);
+                std::vector<int16_t> temp_pcm(4096);
                 bool decode_success = false;
 
                 while (raw.len > 0) {
@@ -469,6 +474,18 @@ void AudioService::OpusCodecTask() {
 
                     if (ret == ESP_AUDIO_ERR_OK) {
                         size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
+
+                        // On first successful decode: create output resampler if sample rate differs
+                        if (output_resampler_ == nullptr &&
+                            dec_info.sample_rate > 0 &&
+                            dec_info.sample_rate != (uint32_t)codec_->output_sample_rate()) {
+                            ESP_LOGI(TAG, "AAC stream: %uHz %uch, codec: %dHz - creating resampler",
+                                     dec_info.sample_rate, dec_info.channel, codec_->output_sample_rate());
+                            esp_ae_rate_cvt_cfg_t cvt_cfg = RATE_CVT_CFG(
+                                dec_info.sample_rate, codec_->output_sample_rate(), ESP_AUDIO_MONO);
+                            esp_ae_rate_cvt_open(&cvt_cfg, &output_resampler_);
+                        }
+
                         // Downmix stereo to mono if needed
                         if (dec_info.channel == 2) {
                             int16_t* src = (int16_t*)out_frame.buffer;
@@ -512,21 +529,257 @@ void AudioService::OpusCodecTask() {
                             break;
                         }
                     } else if (ret == ESP_AUDIO_ERR_DATA_LACK) {
-                        // Need more data
-                        aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                        // Need more data - save to residual for next chunk
+                        if (raw.len <= 32768) {
+                            aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                        }
                         break;
                     } else {
-                        // Skip bytes to resync on next ADTS header
-                        size_t skip = (raw.consumed > 0) ? raw.consumed : 1;
-                        if (skip > raw.len) skip = raw.len;
-                        raw.buffer += skip;
-                        raw.len -= skip;
+                        // Decode error (e.g. error 30 = SBR bitstream error).
+                        // First: try to recover any partial PCM output (AAC-LC core may have decoded)
+                        if (out_frame.decoded_size > 0) {
+                            size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
+                            if (dec_info.channel == 2) {
+                                int16_t* src = (int16_t*)out_frame.buffer;
+                                size_t mono_samples = pcm_samples / 2;
+                                std::vector<int16_t> mono(mono_samples);
+                                for (size_t i = 0; i < mono_samples; ++i) {
+                                    mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
+                                }
+                                if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                    uint32_t target_size = 0;
+                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                    std::vector<int16_t> resampled(target_size);
+                                    uint32_t actual_output = target_size;
+                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
+                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                } else {
+                                    full_pcm.insert(full_pcm.end(), mono.begin(), mono.end());
+                                }
+                            } else {
+                                int16_t* pcm_data = (int16_t*)out_frame.buffer;
+                                full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                            }
+                            decode_success = true;
+                        }
+
+                        // Always advance by what the decoder consumed, if any
+                        if (raw.consumed > 0 && raw.consumed <= raw.len) {
+                            raw.buffer += raw.consumed;
+                            raw.len -= raw.consumed;
+                        } else if (raw.len > 0) {
+                            // If decoder didn't consume anything, forcefully advance by 1 byte to prevent infinite loops
+                            raw.buffer += 1;
+                            raw.len -= 1;
+                        }
+
+                        // Now scan forward in the REMAINING data for the next ADTS sync word (0xFF 0xFx)
+                        bool found_sync = false;
+                        if (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xF0) == 0xF0) {
+                            // Already at a sync word
+                            found_sync = true;
+                        } else {
+                            for (size_t i = 0; i + 1 < raw.len; ++i) {
+                                if (raw.buffer[i] == 0xFF && (raw.buffer[i + 1] & 0xF0) == 0xF0) {
+                                    raw.buffer += i;
+                                    raw.len -= i;
+                                    found_sync = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!found_sync) {
+                            // No sync found in the remaining chunk. 
+                            // Save the entire remaining chunk (up to limit) since it might be the start of a sync word split across chunks.
+                            if (raw.len > 0 && raw.len <= 32768) {
+                                aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                            }
+                            break;
+                        }
                     }
                 }
 
                 if (decode_success && !full_pcm.empty()) {
                     task->pcm = std::move(full_pcm);
                     decoded = true;
+                }
+            } else if (packet->format == 1) { // 1 is MP3
+                // Lazy-init MP3 decoder on first MP3 packet
+                if (mp3_decoder_ == nullptr) {
+                    ESP_LOGI(TAG, "Opening MP3 decoder for radio stream");
+                    esp_mp3_dec_open(nullptr, 0, &mp3_decoder_);
+                    if (mp3_decoder_ == nullptr) {
+                        ESP_LOGE(TAG, "Failed to create MP3 decoder");
+                    }
+                }
+                if (mp3_decoder_ != nullptr) {
+                    // Prepend residual data if any
+                    if (!mp3_residual_buffer_.empty()) {
+                        packet->payload.insert(packet->payload.begin(), mp3_residual_buffer_.begin(), mp3_residual_buffer_.end());
+                        mp3_residual_buffer_.clear();
+                    }
+
+                    esp_audio_dec_in_raw_t raw = {
+                        .buffer = (uint8_t*)packet->payload.data(),
+                        .len = (uint32_t)packet->payload.size(),
+                        .consumed = 0,
+                        .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
+                    };
+
+                    std::vector<int16_t> full_pcm;
+                    std::vector<int16_t> temp_pcm(4608); // MP3: 1152 samples * 2ch * 2 bytes
+                    bool decode_success = false;
+
+                    while (raw.len > 0) {
+                        esp_audio_dec_out_frame_t out_frame = {
+                            .buffer = (uint8_t*)temp_pcm.data(),
+                            .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
+                        };
+                        esp_audio_dec_info_t dec_info = {};
+                        std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+                        auto ret = esp_mp3_dec_decode(mp3_decoder_, &raw, &out_frame, &dec_info);
+                        decoder_lock.unlock();
+
+                        if (ret == ESP_AUDIO_ERR_OK) {
+                            size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
+
+                            // Create output resampler on first successful decode if needed
+                            if (output_resampler_ == nullptr &&
+                                dec_info.sample_rate > 0 &&
+                                dec_info.sample_rate != (uint32_t)codec_->output_sample_rate()) {
+                                ESP_LOGI(TAG, "MP3 stream: %uHz %uch, codec: %dHz - creating resampler",
+                                         dec_info.sample_rate, dec_info.channel, codec_->output_sample_rate());
+                                esp_ae_rate_cvt_cfg_t cvt_cfg = RATE_CVT_CFG(
+                                    dec_info.sample_rate, codec_->output_sample_rate(), ESP_AUDIO_MONO);
+                                esp_ae_rate_cvt_open(&cvt_cfg, &output_resampler_);
+                            }
+
+                            // Downmix stereo to mono if needed
+                            if (dec_info.channel == 2) {
+                                int16_t* src = (int16_t*)out_frame.buffer;
+                                size_t mono_samples = pcm_samples / 2;
+                                std::vector<int16_t> mono(mono_samples);
+                                for (size_t i = 0; i < mono_samples; ++i) {
+                                    mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
+                                }
+                                if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                    uint32_t target_size = 0;
+                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                    std::vector<int16_t> resampled(target_size);
+                                    uint32_t actual_output = target_size;
+                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
+                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                } else {
+                                    full_pcm.insert(full_pcm.end(), mono.begin(), mono.end());
+                                }
+                            } else {
+                                if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                    uint32_t target_size = 0;
+                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                                    std::vector<int16_t> resampled(target_size);
+                                    uint32_t actual_output = target_size;
+                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
+                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                } else {
+                                    int16_t* pcm_data = (int16_t*)out_frame.buffer;
+                                    full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                                }
+                            }
+                            decode_success = true;
+
+                            if (raw.consumed > 0 && raw.consumed <= raw.len) {
+                                raw.buffer += raw.consumed;
+                                raw.len -= raw.consumed;
+                            } else {
+                                break;
+                            }
+                        } else if (ret == ESP_AUDIO_ERR_DATA_LACK) {
+                            if (raw.len <= 32768) {
+                                mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                            }
+                            break;
+                        } else {
+                            // Decode error.
+                            // Try to recover any partial PCM output first
+                            if (out_frame.decoded_size > 0) {
+                                size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
+                                if (dec_info.channel == 2) {
+                                    int16_t* src = (int16_t*)out_frame.buffer;
+                                    size_t mono_samples = pcm_samples / 2;
+                                    std::vector<int16_t> mono(mono_samples);
+                                    for (size_t i = 0; i < mono_samples; ++i) {
+                                        mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
+                                    }
+                                    if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                        uint32_t target_size = 0;
+                                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                        std::vector<int16_t> resampled(target_size);
+                                        uint32_t actual_output = target_size;
+                                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
+                                                                (esp_ae_sample_t)resampled.data(), &actual_output);
+                                        full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                    } else {
+                                        full_pcm.insert(full_pcm.end(), mono.begin(), mono.end());
+                                    }
+                                } else {
+                                    if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                        uint32_t target_size = 0;
+                                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                                        std::vector<int16_t> resampled(target_size);
+                                        uint32_t actual_output = target_size;
+                                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
+                                                                (esp_ae_sample_t)resampled.data(), &actual_output);
+                                        full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                    } else {
+                                        int16_t* pcm_data = (int16_t*)out_frame.buffer;
+                                        full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                                    }
+                                }
+                                decode_success = true;
+                            }
+
+                            // Always advance by what the decoder consumed, if any
+                            if (raw.consumed > 0 && raw.consumed <= raw.len) {
+                                raw.buffer += raw.consumed;
+                                raw.len -= raw.consumed;
+                            } else if (raw.len > 0) {
+                                // Forcefully advance by 1 byte to prevent infinite loops
+                                raw.buffer += 1;
+                                raw.len -= 1;
+                            }
+
+                            // Scan for MP3 sync word (0xFF 0xEx or 0xFF 0xFx) in the REMAINING data
+                            bool found_sync = false;
+                            if (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xE0) == 0xE0) {
+                                found_sync = true;
+                            } else {
+                                for (size_t i = 0; i + 1 < raw.len; ++i) {
+                                    if (raw.buffer[i] == 0xFF && (raw.buffer[i + 1] & 0xE0) == 0xE0) {
+                                        raw.buffer += i;
+                                        raw.len -= i;
+                                        found_sync = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!found_sync) {
+                                if (raw.len > 0 && raw.len <= 32768) {
+                                    mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    if (decode_success && !full_pcm.empty()) {
+                        task->pcm = std::move(full_pcm);
+                        decoded = true;
+                    }
                 }
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured or unsupported format: %d", packet->format);
@@ -884,9 +1137,20 @@ void AudioService::ResetDecoder() {
         if (opus_decoder_ != nullptr) {
             esp_opus_dec_reset(opus_decoder_);
         }
+        if (aac_decoder_ != nullptr) {
+            esp_aac_dec_reset(aac_decoder_);
+            aac_residual_buffer_.clear();
+        }
         if (mp3_decoder_ != nullptr) {
-            esp_mp3_dec_reset(mp3_decoder_);
+            // Close lazy-init MP3 decoder to free RAM when not playing radio
+            esp_mp3_dec_close(mp3_decoder_);
+            mp3_decoder_ = nullptr;
             mp3_residual_buffer_.clear();
+        }
+        // Reset output resampler so it gets recreated for the next stream type
+        if (output_resampler_ != nullptr) {
+            esp_ae_rate_cvt_close(output_resampler_);
+            output_resampler_ = nullptr;
         }
         decoder_lock.unlock();
         timestamp_queue_.clear();

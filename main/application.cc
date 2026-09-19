@@ -578,11 +578,14 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        Schedule([this]() {
+        Schedule([this, &board]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
-            SetDeviceState(kDeviceStateIdle);
+            auto state = GetDeviceState();
+            if (state != kDeviceStateRadioPlaying && state != kDeviceStateAlarmRinging) {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+                SetDeviceState(kDeviceStateIdle);
+            }
         });
     });
 
@@ -1218,6 +1221,7 @@ void Application::StartRadio(const std::string& url) {
         if (!SetDeviceState(kDeviceStateRadioPlaying)) {
             radio_player_.Stop();
         } else {
+            Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             Board::GetInstance().GetDisplay()->SetStatus("Radio");
             Board::GetInstance().GetDisplay()->SetChatMessage("system", "Playing Radio...");
         }
@@ -1227,6 +1231,7 @@ void Application::StartRadio(const std::string& url) {
 void Application::StopRadio() {
     if (GetDeviceState() == kDeviceStateRadioPlaying) {
         radio_player_.Stop();
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         SetDeviceState(kDeviceStateIdle);
     }
 }
