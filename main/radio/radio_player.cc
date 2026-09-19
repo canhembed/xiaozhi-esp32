@@ -105,7 +105,8 @@ void RadioPlayer::WorkerLoop() {
             http->SetHeader("Accept-Encoding", "identity");
 
             ESP_LOGI(TAG, "Opening radio stream: %s", current_request_url.c_str());
-            http->SetHeader("User-Agent", "VLC/3.0.16 LibVLC/3.0.16");  // Zeno.fm requires a User-Agent
+            http->SetHeader("User-Agent",
+                            "VLC/3.0.16 LibVLC/3.0.16");  // Zeno.fm requires a User-Agent
             if (http->Open("GET", current_request_url)) {
                 int status = http->GetStatusCode();
                 if (status >= 200 && status < 300) {
@@ -151,20 +152,21 @@ void RadioPlayer::WorkerLoop() {
 
             std::vector<char> buffer(kHttpReadBufferSize);
             std::vector<uint8_t> accumulator;
-            
-            // Dynamic chunk sizing: Start at 16KB for fast startup, then grow to 64KB for large buffering
-            size_t current_chunk_size = 16384; 
+
+            // Dynamic chunk sizing: Start at 16KB for fast startup, then grow to 64KB for large
+            // buffering
+            size_t current_chunk_size = 16384;
             accumulator.reserve(current_chunk_size);
 
             while (!cancelled_) {
                 int size = http->Read(buffer.data(), buffer.size());
                 if (size < 0) {
                     ESP_LOGE(TAG, "Radio HTTP read failed: %d", http->GetLastError());
-                    break; // Break to reconnect
+                    break;  // Break to reconnect
                 }
                 if (size == 0) {
                     ESP_LOGW(TAG, "Radio HTTP stream ended or EOF");
-                    break; // Break to reconnect
+                    break;  // Break to reconnect
                 }
 
                 if (cancelled_) {
@@ -172,34 +174,31 @@ void RadioPlayer::WorkerLoop() {
                 }
 
                 accumulator.insert(accumulator.end(), buffer.data(), buffer.data() + size);
-                
+
                 // Push when accumulator reaches the current dynamic chunk size
                 if (accumulator.size() >= current_chunk_size) {
                     auto packet = std::make_unique<AudioStreamPacket>();
                     packet->format = audio_format;
                     packet->playback_id = current_playback_id;
                     packet->payload = std::move(accumulator);
-                    
-                    Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
-                    
-                    // Increase chunk size dynamically up to 128KB
-                    if (current_chunk_size < 131072) {
-                        current_chunk_size *= 2; 
-                    }
-                    
+
+                    Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(
+                        std::move(packet), true);
+
+
                     accumulator.clear();
                     accumulator.reserve(current_chunk_size);
                 }
             }
         }
-        
+
         http->Close();
         http.reset();
 
         if (!cancelled_) {
             ESP_LOGW(TAG, "Radio stream disconnected, reconnecting in 3 seconds...");
             for (int i = 0; i < 30 && !cancelled_; i++) {
-                vTaskDelay(pdMS_TO_TICKS(100)); // 3 seconds total
+                vTaskDelay(pdMS_TO_TICKS(100));  // 3 seconds total
             }
         }
     }

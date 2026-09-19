@@ -80,6 +80,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     if (aac_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create AAC decoder, error code: %d", ret);
     } else {
+        esp_log_level_set("ESP_AAC_DEC", ESP_LOG_NONE);
         ESP_LOGI(TAG, "AAC decoder initialized");
     }
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
