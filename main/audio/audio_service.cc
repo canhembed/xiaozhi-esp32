@@ -459,10 +459,16 @@ void AudioService::OpusCodecTask() {
 
                 // AAC frame output: max 1024 samples * 2ch for AAC-LC, 4096 int16 is sufficient
                 std::vector<int16_t> full_pcm;
+                full_pcm.reserve(16384); // 32KB PCM chunks to prevent OOM
                 std::vector<int16_t> temp_pcm(4096);
                 bool decode_success = false;
 
+                int frame_count = 0;
                 while (raw.len > 0) {
+                    frame_count++;
+                    if (frame_count % 3 == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(2)); // Yield to prevent starving PlaybackTask (stutter fix)
+                    }
                     esp_audio_dec_out_frame_t out_frame = {
                         .buffer = (uint8_t*)temp_pcm.data(),
                         .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
@@ -598,6 +604,33 @@ void AudioService::OpusCodecTask() {
                             }
                             break;
                         }
+
+                        if (full_pcm.size() >= 16384) {
+                            auto flush_task = std::make_unique<AudioTask>();
+                            flush_task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+                            flush_task->timestamp = task->timestamp;
+                            flush_task->playback_id = task->playback_id;
+                            flush_task->media_position_ms = task->media_position_ms;
+                            flush_task->pcm = std::move(full_pcm);
+                            
+                            std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
+                            audio_queue_cv_.wait(flush_lock, [this]() {
+                                return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                            });
+                            if (!service_stopped_.load() && generation == playback_generation_) {
+                                audio_playback_queue_.push_back(std::move(flush_task));
+                                const bool notify_drained = MarkPlaybackDrainedLocked();
+                                audio_queue_cv_.notify_all();
+                                flush_lock.unlock();
+                                if (notify_drained && callbacks_.on_playback_drained) {
+                                    callbacks_.on_playback_drained();
+                                }
+                            } else {
+                                flush_lock.unlock();
+                            }
+                            full_pcm = std::vector<int16_t>();
+                            full_pcm.reserve(16384);
+                        }
                     }
                 }
 
@@ -629,10 +662,16 @@ void AudioService::OpusCodecTask() {
                     };
 
                     std::vector<int16_t> full_pcm;
+                    full_pcm.reserve(16384); // 32KB PCM chunks to prevent OOM
                     std::vector<int16_t> temp_pcm(4608); // MP3: 1152 samples * 2ch * 2 bytes
                     bool decode_success = false;
 
+                    int frame_count = 0;
                     while (raw.len > 0) {
+                        frame_count++;
+                        if (frame_count % 3 == 0) {
+                            vTaskDelay(pdMS_TO_TICKS(2)); // Yield to prevent starving PlaybackTask (stutter fix)
+                        }
                         esp_audio_dec_out_frame_t out_frame = {
                             .buffer = (uint8_t*)temp_pcm.data(),
                             .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
@@ -773,6 +812,33 @@ void AudioService::OpusCodecTask() {
                                 }
                                 break;
                             }
+                        }
+
+                        if (full_pcm.size() >= 16384) {
+                            auto flush_task = std::make_unique<AudioTask>();
+                            flush_task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+                            flush_task->timestamp = task->timestamp;
+                            flush_task->playback_id = task->playback_id;
+                            flush_task->media_position_ms = task->media_position_ms;
+                            flush_task->pcm = std::move(full_pcm);
+                            
+                            std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
+                            audio_queue_cv_.wait(flush_lock, [this]() {
+                                return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                            });
+                            if (!service_stopped_.load() && generation == playback_generation_) {
+                                audio_playback_queue_.push_back(std::move(flush_task));
+                                const bool notify_drained = MarkPlaybackDrainedLocked();
+                                audio_queue_cv_.notify_all();
+                                flush_lock.unlock();
+                                if (notify_drained && callbacks_.on_playback_drained) {
+                                    callbacks_.on_playback_drained();
+                                }
+                            } else {
+                                flush_lock.unlock();
+                            }
+                            full_pcm = std::vector<int16_t>();
+                            full_pcm.reserve(16384);
                         }
                     }
 

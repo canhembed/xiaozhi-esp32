@@ -80,117 +80,129 @@ void RadioPlayer::WorkerLoop() {
         current_playback_id = playback_id_;
     }
 
-    auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
-    if (!http) {
-        ESP_LOGE(TAG, "Failed to create HTTP client");
-        return;
-    }
-
     std::string target_url = current_url_;
     // Always use HTTP to save RAM - SSL handshake consumes ~50KB which causes OOM during radio
     if (target_url.rfind("https://", 0) == 0) {
         target_url.replace(0, 8, "http://");
         ESP_LOGI(TAG, "Downgraded URL to HTTP: %s", target_url.c_str());
     }
-    int redirect_count = 0;
-    bool opened = false;
 
-    while (redirect_count < 5 && !cancelled_) {
-        http->SetTimeout(kHttpTimeoutMs);
-        http->SetHeader("Accept", "audio/aac, audio/aacp, audio/mpeg, audio/mp3");
-        http->SetHeader("Accept-Encoding", "identity");
+    while (!cancelled_) {
+        auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
+        if (!http) {
+            ESP_LOGE(TAG, "Failed to create HTTP client");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
-        ESP_LOGI(TAG, "Opening radio stream: %s", target_url.c_str());
-        http->SetHeader("User-Agent", "VLC/3.0.16 LibVLC/3.0.16");  // Zeno.fm requires a User-Agent
-        if (http->Open("GET", target_url)) {
-            int status = http->GetStatusCode();
-            if (status >= 200 && status < 300) {
-                opened = true;
-                break;
-            } else if (status == 301 || status == 302 || status == 307 || status == 308) {
-                std::string location = http->GetResponseHeader("Location");
-                if (location.empty()) {
-                    ESP_LOGE(TAG, "Redirect without Location header");
+        int redirect_count = 0;
+        bool opened = false;
+        std::string current_request_url = target_url;
+
+        while (redirect_count < 5 && !cancelled_) {
+            http->SetTimeout(kHttpTimeoutMs);
+            http->SetHeader("Accept", "audio/aac, audio/aacp, audio/mpeg, audio/mp3");
+            http->SetHeader("Accept-Encoding", "identity");
+
+            ESP_LOGI(TAG, "Opening radio stream: %s", current_request_url.c_str());
+            http->SetHeader("User-Agent", "VLC/3.0.16 LibVLC/3.0.16");  // Zeno.fm requires a User-Agent
+            if (http->Open("GET", current_request_url)) {
+                int status = http->GetStatusCode();
+                if (status >= 200 && status < 300) {
+                    opened = true;
+                    break;
+                } else if (status == 301 || status == 302 || status == 307 || status == 308) {
+                    std::string location = http->GetResponseHeader("Location");
+                    if (location.empty()) {
+                        ESP_LOGE(TAG, "Redirect without Location header");
+                        break;
+                    }
+                    current_request_url = location;
+                    // Downgrade HTTPS to HTTP on redirect
+                    if (current_request_url.rfind("https://", 0) == 0) {
+                        current_request_url.replace(0, 8, "http://");
+                    }
+                    redirect_count++;
+                    http->Close();
+                    ESP_LOGI(TAG, "Redirecting to: %s", current_request_url.c_str());
+                } else {
+                    ESP_LOGE(TAG, "HTTP error: %d", status);
                     break;
                 }
-                target_url = location;
-                // Downgrade HTTPS to HTTP on redirect to avoid 2nd TLS handshake (saves ~50KB RAM)
-                if (target_url.rfind("https://", 0) == 0) {
-                    target_url.replace(0, 8, "http://");
-                }
-                redirect_count++;
-                http->Close();
-                ESP_LOGI(TAG, "Redirecting to: %s", target_url.c_str());
             } else {
-                ESP_LOGE(TAG, "HTTP error: %d", status);
+                ESP_LOGE(TAG, "Failed to open HTTP connection");
                 break;
             }
-        } else {
-            ESP_LOGE(TAG, "Failed to open HTTP connection");
-            break;
-        }
-    }
-
-    if (opened && !cancelled_) {
-        // Detect audio format from Content-Type header
-        // format 2 = AAC, format 1 = MP3
-        uint8_t audio_format = 2;  // Default to AAC (most Zeno streams are AAC)
-        std::string content_type = http->GetResponseHeader("content-type");
-        if (content_type.empty())
-            content_type = http->GetResponseHeader("Content-Type");
-        if (content_type.find("mpeg") != std::string::npos ||
-            content_type.find("mp3") != std::string::npos) {
-            audio_format = 1;  // MP3
-            ESP_LOGI(TAG, "Stream format: MP3 (%s)", content_type.c_str());
-        } else {
-            ESP_LOGI(TAG, "Stream format: AAC (%s)", content_type.c_str());
         }
 
-        std::vector<char> buffer(kHttpReadBufferSize);
-        std::vector<uint8_t> accumulator;
-        
-        // Dynamic chunk sizing: Start at 16KB for fast startup, then grow to 64KB for large buffering
-        size_t current_chunk_size = 16384; 
-        accumulator.reserve(current_chunk_size);
-
-        while (!cancelled_) {
-            int size = http->Read(buffer.data(), buffer.size());
-            if (size < 0) {
-                ESP_LOGE(TAG, "Radio HTTP read failed: %d", http->GetLastError());
-                break;
-            }
-            if (size == 0) {
-                ESP_LOGW(TAG, "Radio HTTP stream ended or EOF");
-                break;
+        if (opened && !cancelled_) {
+            // Detect audio format from Content-Type header
+            uint8_t audio_format = 2;  // Default to AAC
+            std::string content_type = http->GetResponseHeader("content-type");
+            if (content_type.empty())
+                content_type = http->GetResponseHeader("Content-Type");
+            if (content_type.find("mpeg") != std::string::npos ||
+                content_type.find("mp3") != std::string::npos) {
+                audio_format = 1;  // MP3
+                ESP_LOGI(TAG, "Stream format: MP3 (%s)", content_type.c_str());
+            } else {
+                ESP_LOGI(TAG, "Stream format: AAC (%s)", content_type.c_str());
             }
 
-            if (cancelled_) {
-                break;
-            }
-
-            accumulator.insert(accumulator.end(), buffer.data(), buffer.data() + size);
+            std::vector<char> buffer(kHttpReadBufferSize);
+            std::vector<uint8_t> accumulator;
             
-            // Push when accumulator reaches the current dynamic chunk size
-            if (accumulator.size() >= current_chunk_size) {
-                auto packet = std::make_unique<AudioStreamPacket>();
-                packet->format = audio_format;
-                packet->playback_id = current_playback_id;
-                packet->payload = std::move(accumulator);
-                
-                Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
-                
-                // Increase chunk size dynamically up to 128KB
-                if (current_chunk_size < 131072) {
-                    current_chunk_size *= 2; 
+            // Dynamic chunk sizing: Start at 16KB for fast startup, then grow to 64KB for large buffering
+            size_t current_chunk_size = 16384; 
+            accumulator.reserve(current_chunk_size);
+
+            while (!cancelled_) {
+                int size = http->Read(buffer.data(), buffer.size());
+                if (size < 0) {
+                    ESP_LOGE(TAG, "Radio HTTP read failed: %d", http->GetLastError());
+                    break; // Break to reconnect
                 }
+                if (size == 0) {
+                    ESP_LOGW(TAG, "Radio HTTP stream ended or EOF");
+                    break; // Break to reconnect
+                }
+
+                if (cancelled_) {
+                    break;
+                }
+
+                accumulator.insert(accumulator.end(), buffer.data(), buffer.data() + size);
                 
-                accumulator.clear();
-                accumulator.reserve(current_chunk_size);
+                // Push when accumulator reaches the current dynamic chunk size
+                if (accumulator.size() >= current_chunk_size) {
+                    auto packet = std::make_unique<AudioStreamPacket>();
+                    packet->format = audio_format;
+                    packet->playback_id = current_playback_id;
+                    packet->payload = std::move(accumulator);
+                    
+                    Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
+                    
+                    // Increase chunk size dynamically up to 128KB
+                    if (current_chunk_size < 131072) {
+                        current_chunk_size *= 2; 
+                    }
+                    
+                    accumulator.clear();
+                    accumulator.reserve(current_chunk_size);
+                }
+            }
+        }
+        
+        http->Close();
+        http.reset();
+
+        if (!cancelled_) {
+            ESP_LOGW(TAG, "Radio stream disconnected, reconnecting in 3 seconds...");
+            for (int i = 0; i < 30 && !cancelled_; i++) {
+                vTaskDelay(pdMS_TO_TICKS(100)); // 3 seconds total
             }
         }
     }
-    http->Close();
-    http.reset();
 
     // Reset state
     {
