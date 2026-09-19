@@ -543,6 +543,14 @@ void AudioService::OpusCodecTask() {
                         break;
                     } else {
                         // Decode error (e.g. error 30 = SBR bitstream error).
+                        // Check if it's actually a truncated frame (starts with sync word but failed to decode)
+                        bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xF0) == 0xF0);
+                        if (has_sync && raw.len < 2000) {
+                            if (raw.len <= 32768) {
+                                aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                            }
+                            break;
+                        }
                         // First: try to recover any partial PCM output (AAC-LC core may have decoded)
                         if (out_frame.decoded_size > 0) {
                             size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
@@ -744,6 +752,14 @@ void AudioService::OpusCodecTask() {
                             break;
                         } else {
                             // Decode error.
+                            // Check if it's actually a truncated frame (starts with sync word but failed to decode)
+                            bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xE0) == 0xE0);
+                            if (has_sync && raw.len < 2000) {
+                                if (raw.len <= 32768) {
+                                    mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
+                                }
+                                break;
+                            }
                             // Try to recover any partial PCM output first
                             if (out_frame.decoded_size > 0) {
                                 size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);

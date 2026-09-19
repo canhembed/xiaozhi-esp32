@@ -153,9 +153,9 @@ void RadioPlayer::WorkerLoop() {
             std::vector<char> buffer(kHttpReadBufferSize);
             std::vector<uint8_t> accumulator;
 
-            // Dynamic chunk sizing: Start at 16KB for fast startup, then grow to 64KB for large
-            // buffering
-            size_t current_chunk_size = 16384;
+            // Pre-buffering: Start with a large chunk (32KB) to build a buffer before playback starts.
+            // This delays playback by a few seconds but prevents network jitter from causing stutters.
+            size_t current_chunk_size = 32768;
             accumulator.reserve(current_chunk_size);
 
             while (!cancelled_) {
@@ -185,6 +185,10 @@ void RadioPlayer::WorkerLoop() {
                     Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(
                         std::move(packet), true);
 
+                    // After the first pre-buffer chunk, switch to 16KB chunks for frequent feeding
+                    if (current_chunk_size > 16384) {
+                        current_chunk_size = 16384;
+                    }
 
                     accumulator.clear();
                     accumulator.reserve(current_chunk_size);
