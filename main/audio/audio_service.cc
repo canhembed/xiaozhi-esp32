@@ -4,24 +4,19 @@
 #include <decoder/impl/esp_mp3_dec.h>
 #include <cstring>
 
-#define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
-    (esp_ae_rate_cvt_cfg_t)                                  \
-    {                                                        \
-        .src_rate        = (uint32_t)(_src_rate),            \
-        .dest_rate       = (uint32_t)(_dest_rate),           \
-        .channel         = (uint8_t)(_channel),              \
-        .bits_per_sample = ESP_AUDIO_BIT16,                  \
-        .complexity      = 2,                                \
-        .perf_type       = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,  \
+#define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)                                        \
+    (esp_ae_rate_cvt_cfg_t) {                                                                \
+        .src_rate = (uint32_t)(_src_rate), .dest_rate = (uint32_t)(_dest_rate),              \
+        .channel = (uint8_t)(_channel), .bits_per_sample = ESP_AUDIO_BIT16, .complexity = 2, \
+        .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,                                        \
     }
 
-#define OPUS_DEC_CFG(_sample_rate, _frame_duration_ms)                                                    \
-    (esp_opus_dec_cfg_t)                                                                                  \
-    {                                                                                                     \
-        .sample_rate    = (uint32_t)(_sample_rate),                                                       \
-        .channel        = ESP_AUDIO_MONO,                                                                 \
-        .frame_duration = (esp_opus_dec_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(_frame_duration_ms),  \
-        .self_delimited = false,                                                                          \
+#define OPUS_DEC_CFG(_sample_rate, _frame_duration_ms)                                     \
+    (esp_opus_dec_cfg_t) {                                                                 \
+        .sample_rate = (uint32_t)(_sample_rate), .channel = ESP_AUDIO_MONO,                \
+        .frame_duration =                                                                  \
+            (esp_opus_dec_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(_frame_duration_ms), \
+        .self_delimited = false,                                                           \
     }
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
@@ -32,9 +27,7 @@
 
 #define TAG "AudioService"
 
-AudioService::AudioService() {
-    event_group_ = xEventGroupCreate();
-}
+AudioService::AudioService() { event_group_ = xEventGroupCreate(); }
 
 AudioService::~AudioService() {
     if (event_group_ != nullptr) {
@@ -64,7 +57,8 @@ void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
     codec_->Start();
 
-    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(codec->output_sample_rate(), OPUS_FRAME_DURATION_MS);
+    esp_opus_dec_cfg_t opus_dec_cfg =
+        OPUS_DEC_CFG(codec->output_sample_rate(), OPUS_FRAME_DURATION_MS);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create opus decoder, error code: %d", ret);
@@ -75,7 +69,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     }
 
     esp_aac_dec_cfg_t aac_dec_cfg = ESP_AAC_DEC_CONFIG_DEFAULT();
-    aac_dec_cfg.aac_plus_enable = true; // Support HE-AAC / AAC+ streams from internet radio
+    aac_dec_cfg.aac_plus_enable = true;  // Support HE-AAC / AAC+ streams from internet radio
     ret = esp_aac_dec_open(&aac_dec_cfg, sizeof(aac_dec_cfg), &aac_decoder_);
     if (aac_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create AAC decoder, error code: %d", ret);
@@ -125,10 +119,11 @@ void AudioService::Initialize(AudioCodec* codec) {
     });
 
     esp_timer_create_args_t audio_power_timer_args = {
-        .callback = [](void* arg) {
-            AudioService* audio_service = (AudioService*)arg;
-            audio_service->CheckAndUpdateAudioPowerState();
-        },
+        .callback =
+            [](void* arg) {
+                AudioService* audio_service = (AudioService*)arg;
+                audio_service->CheckAndUpdateAudioPowerState();
+            },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "audio_power_timer",
@@ -140,54 +135,64 @@ void AudioService::Initialize(AudioCodec* codec) {
 void AudioService::Start() {
     service_stopped_.store(false);
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
-        AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
+                                           AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+                                           AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
 #if CONFIG_USE_AUDIO_PROCESSOR
     /* Start the audio input task */
-    xTaskCreatePinnedToCore([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
+    xTaskCreatePinnedToCore(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioInputTask();
+            vTaskDelete(NULL);
+        },
+        "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
+    xTaskCreate(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDelete(NULL);
+        },
+        "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
 #else
     /* Start the audio input task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
+    xTaskCreate(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioInputTask();
+            vTaskDelete(NULL);
+        },
+        "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
 
     /* Start the audio output task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048, this, 4, &audio_output_task_handle_);
+    xTaskCreate(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDelete(NULL);
+        },
+        "audio_output", 2048, this, 4, &audio_output_task_handle_);
 #endif
 
     /* Start the opus codec task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->OpusCodecTask();
-        vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 12, this, 4, &opus_codec_task_handle_);
+    xTaskCreate(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->OpusCodecTask();
+            vTaskDelete(NULL);
+        },
+        "opus_codec", 2048 * 12, this, 4, &opus_codec_task_handle_);
 }
 
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
     service_stopped_.store(true);
-    xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
-        AS_EVENT_WAKE_WORD_RUNNING |
-        AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+    xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
+                                         AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
     bool notify_drained = false;
     {
@@ -221,11 +226,12 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
             std::lock_guard<std::mutex> lock(input_resampler_mutex_);
             uint32_t in_sample_num = data.size() / codec_->input_channels();
             uint32_t output_samples = 0;
-            esp_ae_rate_cvt_get_max_out_sample_num(input_resampler_, in_sample_num, &output_samples);
+            esp_ae_rate_cvt_get_max_out_sample_num(input_resampler_, in_sample_num,
+                                                   &output_samples);
             auto resampled = std::vector<int16_t>(output_samples * codec_->input_channels());
             uint32_t actual_output = output_samples;
             esp_ae_rate_cvt_process(input_resampler_, (esp_ae_sample_t)data.data(), in_sample_num,
-                                   (esp_ae_sample_t)resampled.data(), &actual_output);
+                                    (esp_ae_sample_t)resampled.data(), &actual_output);
             resampled.resize(actual_output * codec_->input_channels());
             data = std::move(resampled);
         }
@@ -253,12 +259,13 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 
 void AudioService::AudioInputTask() {
     constexpr EventBits_t kAudioInputActiveBits = AS_EVENT_AUDIO_TESTING_RUNNING |
-        AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING;
+                                                  AS_EVENT_WAKE_WORD_RUNNING |
+                                                  AS_EVENT_AUDIO_PROCESSOR_RUNNING;
 
     while (true) {
-        EventBits_t bits = xEventGroupWaitBits(event_group_, kAudioInputActiveBits |
-            AS_EVENT_AUDIO_INPUT_STOP_REQUEST,
-            pdFALSE, pdFALSE, portMAX_DELAY);
+        EventBits_t bits = xEventGroupWaitBits(
+            event_group_, kAudioInputActiveBits | AS_EVENT_AUDIO_INPUT_STOP_REQUEST, pdFALSE,
+            pdFALSE, portMAX_DELAY);
 
         if (service_stopped_.load()) {
             // ADC continuous mode keeps its hardware mutex from start until stop,
@@ -291,7 +298,8 @@ void AudioService::AudioInputTask() {
 
         /* Used for audio testing in NetworkConfiguring mode by clicking the BOOT button */
         if (bits & AS_EVENT_AUDIO_TESTING_RUNNING) {
-            if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
+            if (audio_testing_queue_.size() >=
+                AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
                 ESP_LOGW(TAG, "Audio testing queue is full, stopping audio testing");
                 EnableAudioTesting(false);
                 continue;
@@ -314,7 +322,7 @@ void AudioService::AudioInputTask() {
 
         /* Feed the selected audio engine */
         if (bits & (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING)) {
-            int samples = 160; // 10ms
+            int samples = 160;  // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
                 audio_engine_->Feed(std::move(data));
@@ -332,9 +340,8 @@ void AudioService::AudioInputTask() {
 void AudioService::AudioOutputTask() {
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-        audio_queue_cv_.wait(lock, [this]() {
-            return !audio_playback_queue_.empty() || service_stopped_.load();
-        });
+        audio_queue_cv_.wait(
+            lock, [this]() { return !audio_playback_queue_.empty() || service_stopped_.load(); });
         if (service_stopped_.load()) {
             break;
         }
@@ -386,16 +393,17 @@ void AudioService::OpusCodecTask() {
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
         audio_queue_cv_.wait(lock, [this]() {
-            return service_stopped_.load() ||
-                !audio_encode_queue_.empty() ||
-                (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
+            return service_stopped_.load() || !audio_encode_queue_.empty() ||
+                   (!audio_decode_queue_.empty() &&
+                    audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
         });
         if (service_stopped_.load()) {
             break;
         }
 
         /* Decode the audio from decode queue */
-        if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
+        if (!audio_decode_queue_.empty() &&
+            audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
             decode_in_flight_ = true;
@@ -410,17 +418,17 @@ void AudioService::OpusCodecTask() {
             task->playback_id = packet->playback_id;
             task->media_position_ms = packet->media_position_ms;
 
-            if (packet->format == 0 && opus_decoder_ != nullptr) { // 0 is OPUS
+            if (packet->format == 0 && opus_decoder_ != nullptr) {  // 0 is OPUS
                 SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
                 task->pcm.resize(decoder_frame_size_);
                 esp_audio_dec_in_raw_t raw = {
-                    .buffer = (uint8_t *)(packet->payload.data()),
+                    .buffer = (uint8_t*)(packet->payload.data()),
                     .len = (uint32_t)(packet->payload.size()),
                     .consumed = 0,
                     .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE,
                 };
                 esp_audio_dec_out_frame_t out_frame = {
-                    .buffer = (uint8_t *)(task->pcm.data()),
+                    .buffer = (uint8_t*)(task->pcm.data()),
                     .len = (uint32_t)(task->pcm.size() * sizeof(int16_t)),
                     .decoded_size = 0,
                 };
@@ -430,12 +438,15 @@ void AudioService::OpusCodecTask() {
                 decoder_lock.unlock();
                 if (ret == ESP_AUDIO_ERR_OK) {
                     task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
-                    if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                    if (decoder_sample_rate_ != codec_->output_sample_rate() &&
+                        output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
-                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
+                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(),
+                                                               &target_size);
                         std::vector<int16_t> resampled(target_size);
                         uint32_t actual_output = target_size;
-                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
+                        esp_ae_rate_cvt_process(output_resampler_,
+                                                (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
                                                 (esp_ae_sample_t)resampled.data(), &actual_output);
                         resampled.resize(actual_output);
                         task->pcm = std::move(resampled);
@@ -444,19 +455,18 @@ void AudioService::OpusCodecTask() {
                 } else {
                     ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
                 }
-            } else if (packet->format == 2 && aac_decoder_ != nullptr) { // 2 is AAC
+            } else if (packet->format == 2 && aac_decoder_ != nullptr) {  // 2 is AAC
                 // Prepend residual data if any
                 if (!aac_residual_buffer_.empty()) {
-                    packet->payload.insert(packet->payload.begin(), aac_residual_buffer_.begin(), aac_residual_buffer_.end());
+                    packet->payload.insert(packet->payload.begin(), aac_residual_buffer_.begin(),
+                                           aac_residual_buffer_.end());
                     aac_residual_buffer_.clear();
                 }
 
-                esp_audio_dec_in_raw_t raw = {
-                    .buffer = (uint8_t*)packet->payload.data(),
-                    .len = (uint32_t)packet->payload.size(),
-                    .consumed = 0,
-                    .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
-                };
+                esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t*)packet->payload.data(),
+                                              .len = (uint32_t)packet->payload.size(),
+                                              .consumed = 0,
+                                              .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
 
                 // AAC frame output: max 1024 samples * 2ch for AAC-LC, 4096 int16 is sufficient
                 std::vector<int16_t> full_pcm;
@@ -472,8 +482,7 @@ void AudioService::OpusCodecTask() {
                     }
                     esp_audio_dec_out_frame_t out_frame = {
                         .buffer = (uint8_t*)temp_pcm.data(),
-                        .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
-                    };
+                        .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))};
                     esp_audio_dec_info_t dec_info = {};
                     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
                     auto ret = esp_aac_dec_decode(aac_decoder_, &raw, &out_frame, &dec_info);
@@ -482,12 +491,13 @@ void AudioService::OpusCodecTask() {
                     if (ret == ESP_AUDIO_ERR_OK) {
                         size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
 
-                        // On first successful decode: create output resampler if sample rate differs
-                        if (output_resampler_ == nullptr &&
-                            dec_info.sample_rate > 0 &&
+                        // On first successful decode: create output resampler if sample rate
+                        // differs
+                        if (output_resampler_ == nullptr && dec_info.sample_rate > 0 &&
                             dec_info.sample_rate != (uint32_t)codec_->output_sample_rate()) {
                             ESP_LOGI(TAG, "AAC stream: %uHz %uch, codec: %dHz - creating resampler",
-                                     dec_info.sample_rate, dec_info.channel, codec_->output_sample_rate());
+                                     dec_info.sample_rate, dec_info.channel,
+                                     codec_->output_sample_rate());
                             esp_ae_rate_cvt_cfg_t cvt_cfg = RATE_CVT_CFG(
                                 dec_info.sample_rate, codec_->output_sample_rate(), ESP_AUDIO_MONO);
                             esp_ae_rate_cvt_open(&cvt_cfg, &output_resampler_);
@@ -501,26 +511,34 @@ void AudioService::OpusCodecTask() {
                             for (size_t i = 0; i < mono_samples; ++i) {
                                 mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
                             }
-                            if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                            if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() &&
+                                output_resampler_ != nullptr) {
                                 uint32_t target_size = 0;
-                                esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_,
+                                                                       mono_samples, &target_size);
                                 std::vector<int16_t> resampled(target_size);
                                 uint32_t actual_output = target_size;
-                                esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
-                                                        (esp_ae_sample_t)resampled.data(), &actual_output);
-                                full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                esp_ae_rate_cvt_process(
+                                    output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
+                                    (esp_ae_sample_t)resampled.data(), &actual_output);
+                                full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                resampled.begin() + actual_output);
                             } else {
                                 full_pcm.insert(full_pcm.end(), mono.begin(), mono.end());
                             }
                         } else {
-                            if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                            if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() &&
+                                output_resampler_ != nullptr) {
                                 uint32_t target_size = 0;
-                                esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                                esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_,
+                                                                       pcm_samples, &target_size);
                                 std::vector<int16_t> resampled(target_size);
                                 uint32_t actual_output = target_size;
-                                esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
-                                                        (esp_ae_sample_t)resampled.data(), &actual_output);
-                                full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                esp_ae_rate_cvt_process(
+                                    output_resampler_, (esp_ae_sample_t)out_frame.buffer,
+                                    pcm_samples, (esp_ae_sample_t)resampled.data(), &actual_output);
+                                full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                resampled.begin() + actual_output);
                             } else {
                                 int16_t* pcm_data = (int16_t*)out_frame.buffer;
                                 full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
@@ -547,7 +565,8 @@ void AudioService::OpusCodecTask() {
 
                             std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
                             audio_queue_cv_.wait(flush_lock, [this]() {
-                                return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                                return service_stopped_.load() ||
+                                       audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
                             });
                             if (!service_stopped_.load() && generation == playback_generation_) {
                                 audio_playback_queue_.push_back(std::move(flush_task));
@@ -571,15 +590,18 @@ void AudioService::OpusCodecTask() {
                         break;
                     } else {
                         // Decode error (e.g. error 30 = SBR bitstream error).
-                        // Check if it's actually a truncated frame (starts with sync word but failed to decode)
-                        bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xF0) == 0xF0);
+                        // Check if it's actually a truncated frame (starts with sync word but
+                        // failed to decode)
+                        bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF &&
+                                         (raw.buffer[1] & 0xF0) == 0xF0);
                         if (has_sync && raw.len < 2000) {
                             if (raw.len <= 32768) {
                                 aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
                             }
                             break;
                         }
-                        // First: try to recover any partial PCM output (AAC-LC core may have decoded)
+                        // First: try to recover any partial PCM output (AAC-LC core may have
+                        // decoded)
                         if (out_frame.decoded_size > 0) {
                             size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
                             if (dec_info.channel == 2) {
@@ -589,14 +611,21 @@ void AudioService::OpusCodecTask() {
                                 for (size_t i = 0; i < mono_samples; ++i) {
                                     mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
                                 }
-                                if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                if (dec_info.sample_rate > 0 &&
+                                    dec_info.sample_rate !=
+                                        (uint32_t)codec_->output_sample_rate() &&
+                                    output_resampler_ != nullptr) {
                                     uint32_t target_size = 0;
-                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                    esp_ae_rate_cvt_get_max_out_sample_num(
+                                        output_resampler_, mono_samples, &target_size);
                                     std::vector<int16_t> resampled(target_size);
                                     uint32_t actual_output = target_size;
-                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
-                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
-                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                    esp_ae_rate_cvt_process(
+                                        output_resampler_, (esp_ae_sample_t)mono.data(),
+                                        mono_samples, (esp_ae_sample_t)resampled.data(),
+                                        &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                    resampled.begin() + actual_output);
                                 } else {
                                     full_pcm.insert(full_pcm.end(), mono.begin(), mono.end());
                                 }
@@ -612,14 +641,17 @@ void AudioService::OpusCodecTask() {
                             raw.buffer += raw.consumed;
                             raw.len -= raw.consumed;
                         } else if (raw.len > 0) {
-                            // If decoder didn't consume anything, forcefully advance by 1 byte to prevent infinite loops
+                            // If decoder didn't consume anything, forcefully advance by 1 byte to
+                            // prevent infinite loops
                             raw.buffer += 1;
                             raw.len -= 1;
                         }
 
-                        // Now scan forward in the REMAINING data for the next ADTS sync word (0xFF 0xFx)
+                        // Now scan forward in the REMAINING data for the next ADTS sync word (0xFF
+                        // 0xFx)
                         bool found_sync = false;
-                        if (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xF0) == 0xF0) {
+                        if (raw.len >= 2 && raw.buffer[0] == 0xFF &&
+                            (raw.buffer[1] & 0xF0) == 0xF0) {
                             // Already at a sync word
                             found_sync = true;
                         } else {
@@ -634,8 +666,9 @@ void AudioService::OpusCodecTask() {
                         }
 
                         if (!found_sync) {
-                            // No sync found in the remaining chunk. 
-                            // Save the entire remaining chunk (up to limit) since it might be the start of a sync word split across chunks.
+                            // No sync found in the remaining chunk.
+                            // Save the entire remaining chunk (up to limit) since it might be the
+                            // start of a sync word split across chunks.
                             if (raw.len > 0 && raw.len <= 32768) {
                                 aac_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
                             }
@@ -649,10 +682,11 @@ void AudioService::OpusCodecTask() {
                             flush_task->playback_id = task->playback_id;
                             flush_task->media_position_ms = task->media_position_ms;
                             flush_task->pcm = std::move(full_pcm);
-                            
+
                             std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
                             audio_queue_cv_.wait(flush_lock, [this]() {
-                                return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                                return service_stopped_.load() ||
+                                       audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
                             });
                             if (!service_stopped_.load() && generation == playback_generation_) {
                                 audio_playback_queue_.push_back(std::move(flush_task));
@@ -675,7 +709,7 @@ void AudioService::OpusCodecTask() {
                     task->pcm = std::move(full_pcm);
                     decoded = true;
                 }
-            } else if (packet->format == 1) { // 1 is MP3
+            } else if (packet->format == 1) {  // 1 is MP3
                 // Lazy-init MP3 decoder on first MP3 packet
                 if (mp3_decoder_ == nullptr) {
                     ESP_LOGI(TAG, "Opening MP3 decoder for radio stream");
@@ -687,20 +721,20 @@ void AudioService::OpusCodecTask() {
                 if (mp3_decoder_ != nullptr) {
                     // Prepend residual data if any
                     if (!mp3_residual_buffer_.empty()) {
-                        packet->payload.insert(packet->payload.begin(), mp3_residual_buffer_.begin(), mp3_residual_buffer_.end());
+                        packet->payload.insert(packet->payload.begin(),
+                                               mp3_residual_buffer_.begin(),
+                                               mp3_residual_buffer_.end());
                         mp3_residual_buffer_.clear();
                     }
 
-                    esp_audio_dec_in_raw_t raw = {
-                        .buffer = (uint8_t*)packet->payload.data(),
-                        .len = (uint32_t)packet->payload.size(),
-                        .consumed = 0,
-                        .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE
-                    };
+                    esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t*)packet->payload.data(),
+                                                  .len = (uint32_t)packet->payload.size(),
+                                                  .consumed = 0,
+                                                  .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
 
                     std::vector<int16_t> full_pcm;
                     full_pcm.reserve(4096);
-                    std::vector<int16_t> temp_pcm(4608); // MP3: 1152 samples * 2ch * 2 bytes
+                    std::vector<int16_t> temp_pcm(4608);  // MP3: 1152 samples * 2ch * 2 bytes
                     bool decode_success = false;
 
                     // Pre-allocate reusable buffers to avoid per-frame heap allocations
@@ -715,8 +749,7 @@ void AudioService::OpusCodecTask() {
                         }
                         esp_audio_dec_out_frame_t out_frame = {
                             .buffer = (uint8_t*)temp_pcm.data(),
-                            .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))
-                        };
+                            .len = (uint32_t)(temp_pcm.size() * sizeof(int16_t))};
                         esp_audio_dec_info_t dec_info = {};
                         std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
                         auto ret = esp_mp3_dec_decode(mp3_decoder_, &raw, &out_frame, &dec_info);
@@ -726,13 +759,15 @@ void AudioService::OpusCodecTask() {
                             size_t pcm_samples = out_frame.decoded_size / sizeof(int16_t);
 
                             // Create output resampler on first successful decode if needed
-                            if (output_resampler_ == nullptr &&
-                                dec_info.sample_rate > 0 &&
+                            if (output_resampler_ == nullptr && dec_info.sample_rate > 0 &&
                                 dec_info.sample_rate != (uint32_t)codec_->output_sample_rate()) {
-                                ESP_LOGI(TAG, "MP3 stream: %uHz %uch, codec: %dHz - creating resampler",
-                                         dec_info.sample_rate, dec_info.channel, codec_->output_sample_rate());
-                                esp_ae_rate_cvt_cfg_t cvt_cfg = RATE_CVT_CFG(
-                                    dec_info.sample_rate, codec_->output_sample_rate(), ESP_AUDIO_MONO);
+                                ESP_LOGI(TAG,
+                                         "MP3 stream: %uHz %uch, codec: %dHz - creating resampler",
+                                         dec_info.sample_rate, dec_info.channel,
+                                         codec_->output_sample_rate());
+                                esp_ae_rate_cvt_cfg_t cvt_cfg =
+                                    RATE_CVT_CFG(dec_info.sample_rate, codec_->output_sample_rate(),
+                                                 ESP_AUDIO_MONO);
                                 esp_ae_rate_cvt_open(&cvt_cfg, &output_resampler_);
                             }
 
@@ -744,29 +779,43 @@ void AudioService::OpusCodecTask() {
                                 for (size_t i = 0; i < mono_samples; ++i) {
                                     mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
                                 }
-                                if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                if (dec_info.sample_rate !=
+                                        (uint32_t)codec_->output_sample_rate() &&
+                                    output_resampler_ != nullptr) {
                                     uint32_t target_size = 0;
-                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                    esp_ae_rate_cvt_get_max_out_sample_num(
+                                        output_resampler_, mono_samples, &target_size);
                                     resampled.resize(target_size);
                                     uint32_t actual_output = target_size;
-                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
-                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
-                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                    esp_ae_rate_cvt_process(
+                                        output_resampler_, (esp_ae_sample_t)mono.data(),
+                                        mono_samples, (esp_ae_sample_t)resampled.data(),
+                                        &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                    resampled.begin() + actual_output);
                                 } else {
-                                    full_pcm.insert(full_pcm.end(), mono.begin(), mono.begin() + mono_samples);
+                                    full_pcm.insert(full_pcm.end(), mono.begin(),
+                                                    mono.begin() + mono_samples);
                                 }
                             } else {
-                                if (dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                if (dec_info.sample_rate !=
+                                        (uint32_t)codec_->output_sample_rate() &&
+                                    output_resampler_ != nullptr) {
                                     uint32_t target_size = 0;
-                                    esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                                    esp_ae_rate_cvt_get_max_out_sample_num(
+                                        output_resampler_, pcm_samples, &target_size);
                                     resampled.resize(target_size);
                                     uint32_t actual_output = target_size;
-                                    esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
-                                                            (esp_ae_sample_t)resampled.data(), &actual_output);
-                                    full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                    esp_ae_rate_cvt_process(
+                                        output_resampler_, (esp_ae_sample_t)out_frame.buffer,
+                                        pcm_samples, (esp_ae_sample_t)resampled.data(),
+                                        &actual_output);
+                                    full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                    resampled.begin() + actual_output);
                                 } else {
                                     int16_t* pcm_data = (int16_t*)out_frame.buffer;
-                                    full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                                    full_pcm.insert(full_pcm.end(), pcm_data,
+                                                    pcm_data + pcm_samples);
                                 }
                             }
                             decode_success = true;
@@ -789,9 +838,12 @@ void AudioService::OpusCodecTask() {
 
                                 std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
                                 audio_queue_cv_.wait(flush_lock, [this]() {
-                                    return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                                    return service_stopped_.load() ||
+                                           audio_playback_queue_.size() <
+                                               MAX_PLAYBACK_TASKS_IN_QUEUE;
                                 });
-                                if (!service_stopped_.load() && generation == playback_generation_) {
+                                if (!service_stopped_.load() &&
+                                    generation == playback_generation_) {
                                     audio_playback_queue_.push_back(std::move(flush_task));
                                     const bool notify_drained = MarkPlaybackDrainedLocked();
                                     audio_queue_cv_.notify_all();
@@ -812,8 +864,10 @@ void AudioService::OpusCodecTask() {
                             break;
                         } else {
                             // Decode error.
-                            // Check if it's actually a truncated frame (starts with sync word but failed to decode)
-                            bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xE0) == 0xE0);
+                            // Check if it's actually a truncated frame (starts with sync word but
+                            // failed to decode)
+                            bool has_sync = (raw.len >= 2 && raw.buffer[0] == 0xFF &&
+                                             (raw.buffer[1] & 0xE0) == 0xE0);
                             if (has_sync && raw.len < 2000) {
                                 if (raw.len <= 32768) {
                                     mp3_residual_buffer_.assign(raw.buffer, raw.buffer + raw.len);
@@ -830,29 +884,45 @@ void AudioService::OpusCodecTask() {
                                     for (size_t i = 0; i < mono_samples; ++i) {
                                         mono[i] = (int32_t(src[i * 2]) + src[i * 2 + 1]) / 2;
                                     }
-                                    if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                    if (dec_info.sample_rate > 0 &&
+                                        dec_info.sample_rate !=
+                                            (uint32_t)codec_->output_sample_rate() &&
+                                        output_resampler_ != nullptr) {
                                         uint32_t target_size = 0;
-                                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, mono_samples, &target_size);
+                                        esp_ae_rate_cvt_get_max_out_sample_num(
+                                            output_resampler_, mono_samples, &target_size);
                                         resampled.resize(target_size);
                                         uint32_t actual_output = target_size;
-                                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)mono.data(), mono_samples,
-                                                                (esp_ae_sample_t)resampled.data(), &actual_output);
-                                        full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                        esp_ae_rate_cvt_process(
+                                            output_resampler_, (esp_ae_sample_t)mono.data(),
+                                            mono_samples, (esp_ae_sample_t)resampled.data(),
+                                            &actual_output);
+                                        full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                        resampled.begin() + actual_output);
                                     } else {
-                                        full_pcm.insert(full_pcm.end(), mono.begin(), mono.begin() + mono_samples);
+                                        full_pcm.insert(full_pcm.end(), mono.begin(),
+                                                        mono.begin() + mono_samples);
                                     }
                                 } else {
-                                    if (dec_info.sample_rate > 0 && dec_info.sample_rate != (uint32_t)codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                                    if (dec_info.sample_rate > 0 &&
+                                        dec_info.sample_rate !=
+                                            (uint32_t)codec_->output_sample_rate() &&
+                                        output_resampler_ != nullptr) {
                                         uint32_t target_size = 0;
-                                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, pcm_samples, &target_size);
+                                        esp_ae_rate_cvt_get_max_out_sample_num(
+                                            output_resampler_, pcm_samples, &target_size);
                                         resampled.resize(target_size);
                                         uint32_t actual_output = target_size;
-                                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)out_frame.buffer, pcm_samples,
-                                                                (esp_ae_sample_t)resampled.data(), &actual_output);
-                                        full_pcm.insert(full_pcm.end(), resampled.begin(), resampled.begin() + actual_output);
+                                        esp_ae_rate_cvt_process(
+                                            output_resampler_, (esp_ae_sample_t)out_frame.buffer,
+                                            pcm_samples, (esp_ae_sample_t)resampled.data(),
+                                            &actual_output);
+                                        full_pcm.insert(full_pcm.end(), resampled.begin(),
+                                                        resampled.begin() + actual_output);
                                     } else {
                                         int16_t* pcm_data = (int16_t*)out_frame.buffer;
-                                        full_pcm.insert(full_pcm.end(), pcm_data, pcm_data + pcm_samples);
+                                        full_pcm.insert(full_pcm.end(), pcm_data,
+                                                        pcm_data + pcm_samples);
                                     }
                                 }
                                 decode_success = true;
@@ -870,11 +940,13 @@ void AudioService::OpusCodecTask() {
 
                             // Scan for MP3 sync word (0xFF 0xEx or 0xFF 0xFx) in the REMAINING data
                             bool found_sync = false;
-                            if (raw.len >= 2 && raw.buffer[0] == 0xFF && (raw.buffer[1] & 0xE0) == 0xE0) {
+                            if (raw.len >= 2 && raw.buffer[0] == 0xFF &&
+                                (raw.buffer[1] & 0xE0) == 0xE0) {
                                 found_sync = true;
                             } else {
                                 for (size_t i = 0; i + 1 < raw.len; ++i) {
-                                    if (raw.buffer[i] == 0xFF && (raw.buffer[i + 1] & 0xE0) == 0xE0) {
+                                    if (raw.buffer[i] == 0xFF &&
+                                        (raw.buffer[i + 1] & 0xE0) == 0xE0) {
                                         raw.buffer += i;
                                         raw.len -= i;
                                         found_sync = true;
@@ -898,10 +970,11 @@ void AudioService::OpusCodecTask() {
                             flush_task->playback_id = task->playback_id;
                             flush_task->media_position_ms = task->media_position_ms;
                             flush_task->pcm = std::move(full_pcm);
-                            
+
                             std::unique_lock<std::mutex> flush_lock(audio_queue_mutex_);
                             audio_queue_cv_.wait(flush_lock, [this]() {
-                                return service_stopped_.load() || audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+                                return service_stopped_.load() ||
+                                       audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
                             });
                             if (!service_stopped_.load() && generation == playback_generation_) {
                                 audio_playback_queue_.push_back(std::move(flush_task));
@@ -925,7 +998,8 @@ void AudioService::OpusCodecTask() {
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "Audio decoder is not configured or unsupported format: %d", packet->format);
+                ESP_LOGE(TAG, "Audio decoder is not configured or unsupported format: %d",
+                         packet->format);
             }
 
             lock.lock();
@@ -957,7 +1031,7 @@ void AudioService::OpusCodecTask() {
             if (opus_encoder_ != nullptr && task->pcm.size() == encoder_frame_size_) {
                 std::vector<uint8_t> buf(encoder_outbuf_size_);
                 esp_audio_enc_in_frame_t in = {
-                    .buffer = (uint8_t *)(task->pcm.data()),
+                    .buffer = (uint8_t*)(task->pcm.data()),
                     .len = (uint32_t)(encoder_frame_size_ * sizeof(int16_t)),
                 };
                 esp_audio_enc_out_frame_t out = {
@@ -991,7 +1065,9 @@ void AudioService::OpusCodecTask() {
                     ESP_LOGE(TAG, "Failed to encode audio, error code: %d", ret);
                 }
             } else {
-                ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u)",
+                ESP_LOGE(TAG,
+                         "Failed to encode audio: encoder not configured or invalid frame size "
+                         "(got %u, expected %u)",
                          task->pcm.size(), encoder_frame_size_);
             }
             lock.lock();
@@ -1023,13 +1099,14 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (decoder_sample_rate_ != codec->output_sample_rate()) {
-        ESP_LOGI(TAG, "Resampling audio from %d to %d", decoder_sample_rate_, codec->output_sample_rate());
+        ESP_LOGI(TAG, "Resampling audio from %d to %d", decoder_sample_rate_,
+                 codec->output_sample_rate());
         if (output_resampler_ != nullptr) {
             esp_ae_rate_cvt_close(output_resampler_);
             output_resampler_ = nullptr;
         }
-        esp_ae_rate_cvt_cfg_t output_resampler_cfg = RATE_CVT_CFG(
-            decoder_sample_rate_, codec->output_sample_rate(), ESP_AUDIO_MONO);
+        esp_ae_rate_cvt_cfg_t output_resampler_cfg =
+            RATE_CVT_CFG(decoder_sample_rate_, codec->output_sample_rate(), ESP_AUDIO_MONO);
         auto resampler_ret = esp_ae_rate_cvt_open(&output_resampler_cfg, &output_resampler_);
         if (output_resampler_ == nullptr) {
             ESP_LOGE(TAG, "Failed to create output resampler, error code: %d", resampler_ret);
@@ -1052,7 +1129,8 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
             if (timestamp_queue_.size() <= MAX_TIMESTAMPS_IN_QUEUE) {
                 task->timestamp = timestamp_queue_.front();
             } else {
-                ESP_LOGW(TAG, "Timestamp queue (%u) is full, dropping timestamp", timestamp_queue_.size());
+                ESP_LOGW(TAG, "Timestamp queue (%u) is full, dropping timestamp",
+                         timestamp_queue_.size());
             }
             timestamp_queue_.pop_front();
         }
@@ -1087,8 +1165,7 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
             audio_queue_cv_.wait(lock, [this, generation]() {
-                return service_stopped_.load() ||
-                       generation != playback_generation_ ||
+                return service_stopped_.load() || generation != playback_generation_ ||
                        audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
             });
         } else {
@@ -1234,9 +1311,7 @@ void AudioService::EnableDeviceAec(bool enable) {
     }
 }
 
-void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
-    callbacks_ = callbacks;
-}
+void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) { callbacks_ = callbacks; }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
     if (!codec_->output_enabled()) {
@@ -1249,14 +1324,15 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     size_t size = ogg.size();
 
     auto demuxer = std::make_unique<OggDemuxer>();
-    demuxer->OnPacket([this](const uint8_t* data, int sample_rate, int frame_duration_ms, size_t size){
-        auto packet = std::make_unique<AudioStreamPacket>();
-        packet->sample_rate = sample_rate;
-        packet->frame_duration = frame_duration_ms;
-        packet->payload.resize(size);
-        std::memcpy(packet->payload.data(), data, size);
-        PushPacketToDecodeQueue(std::move(packet), true);
-    });
+    demuxer->OnPacket(
+        [this](const uint8_t* data, int sample_rate, int frame_duration_ms, size_t size) {
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->sample_rate = sample_rate;
+            packet->frame_duration = frame_duration_ms;
+            packet->payload.resize(size);
+            std::memcpy(packet->payload.data(), data, size);
+            PushPacketToDecodeQueue(std::move(packet), true);
+        });
     demuxer->Reset();
     demuxer->Process(buf, size);
 }
@@ -1309,8 +1385,8 @@ void AudioService::ResetDecoder() {
 }
 
 bool AudioService::IsPlaybackDrainedLocked() const {
-    return audio_decode_queue_.empty() && audio_playback_queue_.empty() &&
-        !decode_in_flight_ && !output_in_flight_;
+    return audio_decode_queue_.empty() && audio_playback_queue_.empty() && !decode_in_flight_ &&
+           !output_in_flight_;
 }
 
 bool AudioService::MarkPlaybackDrainedLocked() {
@@ -1323,8 +1399,10 @@ bool AudioService::MarkPlaybackDrainedLocked() {
 
 void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
-    auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
-    auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
+    auto input_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
+    auto output_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
     if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
         // ADC continuous start/stop must run in the same task. Wake the audio
         // input task instead of closing the codec from the esp_timer task.
