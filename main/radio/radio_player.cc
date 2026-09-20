@@ -153,10 +153,29 @@ void RadioPlayer::WorkerLoop() {
             std::vector<char> buffer(kHttpReadBufferSize);
             std::vector<uint8_t> accumulator;
 
-            // Pre-buffering: MP3 streams are typically higher bitrate (128kbps+), so they need a larger 
-            // buffer (64KB = 4 seconds) to prevent stuttering. AAC is typically lower bitrate (64kbps),
-            // so 32KB is enough for a 4-second buffer, keeping startup fast for both.
-            size_t current_chunk_size = (audio_format == kAudioFormatMp3) ? 65536 : 32768;
+            std::string icy_br = http->GetResponseHeader("icy-br");
+            if (icy_br.empty())
+                icy_br = http->GetResponseHeader("Icy-Br");
+
+            int bitrate = 0;
+            if (!icy_br.empty()) {
+                try {
+                    bitrate = std::stoi(icy_br);
+                } catch (...) {}
+            }
+            if (bitrate <= 0) {
+                // Default to 128kbps for MP3, 64kbps for AAC
+                bitrate = (audio_format == 1 /* MP3 */) ? 128 : 64;
+            }
+
+            size_t bytes_per_second = (bitrate * 1000) / 8;
+            size_t initial_chunk_size = bytes_per_second * 10; // 10 seconds pre-buffer
+            size_t normal_chunk_size = bytes_per_second * 1;   // 1 second chunk dynamically
+
+            ESP_LOGI(TAG, "Bitrate: %d kbps, Pre-buffer: %zu bytes (10s), Chunk: %zu bytes (1s)",
+                     bitrate, initial_chunk_size, normal_chunk_size);
+
+            size_t current_chunk_size = initial_chunk_size;
             accumulator.reserve(current_chunk_size);
 
             while (!cancelled_) {
@@ -186,9 +205,9 @@ void RadioPlayer::WorkerLoop() {
                     Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(
                         std::move(packet), true);
 
-                    // After the first pre-buffer chunk, switch to 16KB chunks for frequent feeding
-                    if (current_chunk_size > 16384) {
-                        current_chunk_size = 16384;
+                    // After the first pre-buffer chunk, switch to the dynamic normal chunk size
+                    if (current_chunk_size == initial_chunk_size) {
+                        current_chunk_size = normal_chunk_size;
                     }
 
                     accumulator.clear();
